@@ -45,6 +45,9 @@ def canonical_parameters_from_case_row(
     allow_case_name_fallback: bool,
 ) -> dict[str, Any]:
     parse_status = "explicit_columns"
+    plasma_kind = (
+        str(row.get("PLASMA_KIND", row.get("plasma_kind", ""))).strip().lower()
+    )
 
     if "LASER_CASE" in row and str(row.get("LASER_CASE", "")).strip():
         laser_case = normalize_laser_case(
@@ -85,7 +88,10 @@ def canonical_parameters_from_case_row(
         not np.isfinite(v) for v in [f_number, n0_cm3, plateau, diameter, focus]
     )
 
-    if missing_core and allow_case_name_fallback:
+    if missing_core and plasma_kind != "chan":
+        parse_status = "baseline_or_vacuum_not_optimized"
+
+    elif missing_core and allow_case_name_fallback:
         parsed = parse_case_name_parameters(
             str(row.get("CASE_NAME", row.get("case_name", "")))
         )
@@ -105,9 +111,7 @@ def canonical_parameters_from_case_row(
     return {
         "laser_case": laser_case,
         "f_number": f_number,
-        "plasma_kind": str(row.get("PLASMA_KIND", row.get("plasma_kind", "")))
-        .strip()
-        .lower(),
+        "plasma_kind": str(plasma_kind).strip().lower(),
         "n0_cm3": n0_cm3,
         "n0_1e18cm3": n0_cm3 / 1.0e18 if np.isfinite(n0_cm3) else float("nan"),
         "plateau_length_mm": plateau,

@@ -75,6 +75,23 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
             "objective_failure_reason": "",
         }
 
+        plasma_kind = str(row.get("plasma_kind", "")).strip().lower()
+
+        if plasma_kind != "chan":
+            for score in SCORE_SPECS:
+                out[score] = float("nan")
+                out[f"{score}_status"] = "not_applicable_baseline_or_vacuum"
+                out[f"{score}_direction"] = "maximize"
+                out[f"{score}_source_metric"] = ""
+
+            out["objective_status"] = "not_optimized_baseline_or_vacuum"
+            out["objective_failure_reason"] = (
+                f"plasma_kind={plasma_kind} is not an optimizable channel case"
+            )
+            out["fit_eligible"] = "false"
+            rows.append(out)
+            continue
+
         failures = []
 
         for score, source_cols in SCORE_SPECS.items():
