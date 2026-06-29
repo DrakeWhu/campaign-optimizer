@@ -35,6 +35,17 @@ DEFAULT_RECOMMENDATION = {
     "nearest_k": 8,
 }
 
+DEFAULT_CANDIDATE_BATCH = {
+    "case_id_start": 0,
+    "plasma_kind": "chan",
+    "cap_nr": 192,
+    "cap_rmax_um": None,
+    "campaign_template": {
+        "campaign_json": "campaign.json",
+        "input_template": "input_template.py",
+    },
+}
+
 
 @dataclass(frozen=True)
 class OptimizerConfig:
@@ -84,6 +95,33 @@ class OptimizerConfig:
     def recommendation_config(self) -> dict[str, Any]:
         value = dict(DEFAULT_RECOMMENDATION)
         value.update(self.data.get("recommendation", {}) or {})
+        return value
+
+    def candidate_batch_config(self) -> dict[str, Any]:
+        value = {
+            "case_id_start": DEFAULT_CANDIDATE_BATCH["case_id_start"],
+            "plasma_kind": DEFAULT_CANDIDATE_BATCH["plasma_kind"],
+            "cap_nr": DEFAULT_CANDIDATE_BATCH["cap_nr"],
+            "cap_rmax_um": DEFAULT_CANDIDATE_BATCH["cap_rmax_um"],
+            "campaign_template": dict(DEFAULT_CANDIDATE_BATCH["campaign_template"]),
+        }
+
+        override = self.data.get("candidate_batch", {}) or {}
+        value.update(
+            {
+                k: v
+                for k, v in override.items()
+                if k not in {"cap_rmax_um", "campaign_template"}
+            }
+        )
+
+        if override.get("cap_rmax_um") is not None:
+            value["cap_rmax_um"] = dict(override.get("cap_rmax_um") or {})
+
+        campaign_template = dict(value["campaign_template"])
+        campaign_template.update(override.get("campaign_template", {}) or {})
+        value["campaign_template"] = campaign_template
+
         return value
 
     def validation_config(self) -> dict[str, Any]:

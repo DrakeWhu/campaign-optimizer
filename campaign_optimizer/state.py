@@ -44,6 +44,8 @@ def write_optimizer_state(
     objectives_path: Path | None = None,
     recommendations_path: Path | None = None,
     surrogate_summary_path: Path | None = None,
+    candidate_batch_path: Path | None = None,
+    batch_campaign_plan_path: Path | None = None,
     backend: str = "passive_nearest_observed",
 ) -> Path:
     objective_hash = stable_hash(objective_config)
@@ -76,8 +78,10 @@ def write_optimizer_state(
                 "objectives": relative_to_iter(iter_dir, objectives_path),
                 "recommendations": relative_to_iter(iter_dir, recommendations_path),
                 "surrogate_summary": relative_to_iter(iter_dir, surrogate_summary_path),
-                "candidate_batch": None,
-                "batch_campaign_plan": None,
+                "candidate_batch": relative_to_iter(iter_dir, candidate_batch_path),
+                "batch_campaign_plan": relative_to_iter(
+                    iter_dir, batch_campaign_plan_path
+                ),
             }
         ],
     }

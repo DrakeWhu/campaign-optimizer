@@ -12,6 +12,7 @@ class TestCliModules(unittest.TestCase):
             "campaign_optimizer.cli.fit_surrogates",
             "campaign_optimizer.cli.propose_recommendations",
             "campaign_optimizer.cli.run_iteration",
+            "campaign_optimizer.cli.build_candidate_batch",
         ]
 
         for name in modules:
