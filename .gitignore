@@ -8,3 +8,4 @@ venv/
 optimizer_runs/
 *.egg-info/
 .DS_Store
+*.zip
