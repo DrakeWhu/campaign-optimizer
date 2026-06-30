@@ -187,6 +187,61 @@ class RunIterationBuildCandidateBatchFlagTests(unittest.TestCase):
         self.assertNotIn("[OK] candidate_batch", stdout.getvalue())
         self.assertNotIn("[OK] batch_campaign_plan", stdout.getvalue())
 
+    def test_run_iteration_build_report_flag_calls_report_builder_once(self) -> None:
+        iter_dir = self.cfg.iteration_dir(1)
+        report_manifest = iter_dir / "reports" / "plot_manifest.json"
+
+        stdout = io.StringIO()
+        with (
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.load_optimizer_config",
+                return_value=self.cfg,
+            ),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.build_observations",
+                return_value=iter_dir / "inputs" / "observations.csv",
+            ),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.build_objectives",
+                return_value=iter_dir / "inputs" / "objective_table.csv",
+            ),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.read_table",
+                return_value=pd.DataFrame([{"fit_eligible": "true"}]),
+            ),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.write_json",
+                return_value=iter_dir / "outputs" / "surrogate_summary.json",
+            ),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.propose_recommendations",
+                return_value=iter_dir / "outputs" / "recommended_candidates.tsv",
+            ),
+            mock.patch("campaign_optimizer.cli.run_iteration.write_basic_plots"),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.write_optimizer_state",
+                return_value=iter_dir / "optimizer_state.json",
+            ),
+            mock.patch(
+                "campaign_optimizer.cli.run_iteration.build_report",
+                return_value={"plot_manifest": report_manifest},
+            ) as build_report,
+            contextlib.redirect_stdout(stdout),
+        ):
+            rc = run_iteration_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--iteration",
+                    "1",
+                    "--build-report",
+                ]
+            )
+
+        self.assertEqual(rc, 0)
+        build_report.assert_called_once_with(self.cfg, 1)
+        self.assertIn("[OK] report_manifest", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
