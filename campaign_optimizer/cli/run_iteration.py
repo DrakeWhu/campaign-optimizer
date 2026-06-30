@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import argparse
 
-from campaign_optimizer.config import load_optimizer_config
-from campaign_optimizer.observations import build_observations
-from campaign_optimizer.objectives import build_objectives
-from campaign_optimizer.recommend import propose_recommendations
-from campaign_optimizer.io import read_table, write_json
-from campaign_optimizer.state import write_optimizer_state
+from campaign_optimizer.capillary.batch import build_candidate_batch
 from campaign_optimizer.capillary.plotting import write_basic_plots
+from campaign_optimizer.config import load_optimizer_config
+from campaign_optimizer.io import read_table, write_json
+from campaign_optimizer.objectives import build_objectives
+from campaign_optimizer.observations import build_observations
+from campaign_optimizer.recommend import propose_recommendations
+from campaign_optimizer.state import write_optimizer_state
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--iteration", type=int, required=True)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--build-candidate-batch",
+        action="store_true",
+        help=(
+            "After writing recommended_candidates.tsv, also build "
+            "outputs/candidate_batch.tsv and outputs/batch_campaign_plan.json."
+        ),
+    )
+    args = parser.parse_args(argv)
 
     cfg = load_optimizer_config(args.config)
     iter_dir = cfg.iteration_dir(args.iteration)
@@ -55,11 +64,25 @@ def main() -> None:
         surrogate_summary_path=surrogate_summary,
     )
 
+    candidate_batch_path = None
+    batch_campaign_plan_path = None
+    if args.build_candidate_batch:
+        candidate_batch_path, batch_campaign_plan_path = build_candidate_batch(
+            cfg,
+            args.iteration,
+        )
+
     print(f"[OK] observations     {observations}")
     print(f"[OK] objectives       {objectives}")
     print(f"[OK] recommendations  {recommendations}")
     print(f"[OK] state            {state}")
 
+    if args.build_candidate_batch:
+        print(f"[OK] candidate_batch      {candidate_batch_path}")
+        print(f"[OK] batch_campaign_plan  {batch_campaign_plan_path}")
+
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
