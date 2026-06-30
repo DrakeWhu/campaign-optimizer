@@ -566,6 +566,392 @@ def _surrogate_diagnostics(
     }
 
 
+def _json_clean(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _json_clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_clean(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_clean(v) for v in value]
+    if isinstance(value, (np.floating, float)):
+        if not np.isfinite(value):
+            return None
+        return float(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if pd.isna(value) if value is not None else False:
+        return None
+    return value
+
+
+def _finite_numeric(df: pd.DataFrame, column: str) -> pd.Series:
+    values = _num(df, column)
+    return values[np.isfinite(values)]
+
+
+def _max_or_none(df: pd.DataFrame, column: str) -> float | None:
+    values = _finite_numeric(df, column)
+    if values.empty:
+        return None
+    return float(values.max())
+
+
+def _median_or_none(values: pd.Series) -> float | None:
+    finite = values[np.isfinite(values)]
+    if finite.empty:
+        return None
+    return float(finite.median())
+
+
+def _min_or_none(values: pd.Series) -> float | None:
+    finite = values[np.isfinite(values)]
+    if finite.empty:
+        return None
+    return float(finite.min())
+
+
+def _target_history_iteration(iteration: int) -> int | None:
+    # Optimizer iteration N normally consumes observations available up to
+    # campaign iteration N-1. For N=0 there is no previous campaign iteration.
+    return iteration - 1 if iteration > 0 else None
+
+
+def _build_best_score_signals(
+    fit: pd.DataFrame,
+    *,
+    iteration: int,
+    objective_config: dict[str, Any],
+) -> dict[str, Any]:
+    required = list(objective_config.get("required_scores_for_fit", []))
+    score_names = [s for s in SCORES if s in fit.columns]
+
+    best_scores: dict[str, float | None] = {}
+    best_score_improvement: dict[str, float | None] = {}
+    best_score_improvement_status: dict[str, str] = {}
+
+    target_iter = _target_history_iteration(iteration)
+    if target_iter is not None and "history_iteration" in fit.columns:
+        new_mask = _num(fit, "history_iteration").eq(float(target_iter))
+    else:
+        new_mask = pd.Series(False, index=fit.index)
+
+    new_fit = fit[new_mask].copy()
+    previous_fit = fit[~new_mask].copy()
+
+    for score in score_names:
+        best_all = _max_or_none(fit, score)
+        best_new = _max_or_none(new_fit, score)
+        best_previous = _max_or_none(previous_fit, score)
+
+        best_scores[score] = best_all
+
+        if best_new is None:
+            best_score_improvement[score] = None
+            best_score_improvement_status[score] = "no_new_finite_score"
+        elif best_previous is None:
+            best_score_improvement[score] = None
+            best_score_improvement_status[score] = "no_previous_finite_score"
+        else:
+            best_score_improvement[score] = float(best_new - best_previous)
+            best_score_improvement_status[score] = "ok"
+
+    return {
+        "required_scores_for_fit": required,
+        "score_names": score_names,
+        "target_history_iteration": target_iter,
+        "n_fit_eligible_total": int(len(fit)),
+        "n_new_valid_observations": int(len(new_fit)),
+        "best_scores": best_scores,
+        "best_score_improvement": best_score_improvement,
+        "best_score_improvement_status": best_score_improvement_status,
+    }
+
+
+def _build_improvement_window_signal(
+    fit: pd.DataFrame,
+    *,
+    window: int,
+) -> dict[str, Any]:
+    if "history_iteration" not in fit.columns:
+        return {
+            "window": int(window),
+            "status": "unknown",
+            "reason": "history_iteration column is missing",
+            "values": {},
+        }
+
+    hist_iter = _num(fit, "history_iteration")
+    finite_iters = sorted(
+        int(v) for v in hist_iter[np.isfinite(hist_iter)].drop_duplicates().tolist()
+    )
+
+    if len(finite_iters) < 2:
+        return {
+            "window": int(window),
+            "status": "skipped",
+            "reason": "fewer than two finite optimizer/campaign iterations",
+            "values": {},
+        }
+
+    latest = finite_iters[-1]
+    older = finite_iters[max(0, len(finite_iters) - int(window) - 1) : -1]
+
+    latest_fit = fit[hist_iter.eq(float(latest))]
+    older_fit = fit[hist_iter.isin([float(v) for v in older])]
+
+    values: dict[str, float | None] = {}
+    statuses: dict[str, str] = {}
+
+    for score in [s for s in SCORES if s in fit.columns]:
+        best_latest = _max_or_none(latest_fit, score)
+        best_older = _max_or_none(older_fit, score)
+
+        if best_latest is None or best_older is None:
+            values[score] = None
+            statuses[score] = "missing_finite_score"
+        else:
+            values[score] = float(best_latest - best_older)
+            statuses[score] = "ok"
+
+    return {
+        "window": int(window),
+        "status": "ok",
+        "latest_history_iteration": latest,
+        "comparison_history_iterations": older,
+        "values": values,
+        "statuses": statuses,
+    }
+
+
+def _build_candidate_novelty_signal(rec: pd.DataFrame | None) -> dict[str, Any]:
+    if rec is None or rec.empty:
+        return {
+            "status": "unknown",
+            "reason": "recommended_candidates.tsv is missing or empty",
+        }
+
+    if "nearest_known_scaled_dist" not in rec.columns:
+        return {
+            "status": "unknown",
+            "reason": "nearest_known_scaled_dist column is missing",
+        }
+
+    values = _num(rec, "nearest_known_scaled_dist")
+    return {
+        "status": "ok",
+        "n_candidates": int(len(values)),
+        "n_finite": int(np.isfinite(values).sum()),
+        "min_nearest_known_scaled_dist": _min_or_none(values),
+        "median_nearest_known_scaled_dist": _median_or_none(values),
+    }
+
+
+def _build_boundary_signal(boundary: pd.DataFrame) -> dict[str, Any]:
+    if boundary.empty:
+        return {
+            "status": "unknown",
+            "reason": "boundary_saturation_summary is empty",
+            "fraction_candidates_near_boundary": None,
+            "parameters": {},
+        }
+
+    parameters: dict[str, float | None] = {}
+    for _, row in boundary.iterrows():
+        name = str(row.get("parameter", ""))
+        if not name:
+            continue
+        value = pd.to_numeric(
+            pd.Series([row.get("fraction_saturated")]), errors="coerce"
+        ).iloc[0]
+        parameters[name] = float(value) if np.isfinite(value) else None
+
+    finite = [v for v in parameters.values() if v is not None]
+    return {
+        "status": "ok" if finite else "unknown",
+        "reason": "" if finite else "no finite boundary saturation fractions",
+        "fraction_candidates_near_boundary": max(finite) if finite else None,
+        "parameters": parameters,
+    }
+
+
+def _build_surrogate_reliability_signal(
+    surrogate: dict[str, Any] | None,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    summary = surrogate or {}
+    backend = str(summary.get("backend", "unknown"))
+    status = str(summary.get("status", "unknown"))
+
+    if not summary:
+        return {
+            "status": "unknown",
+            "reason": "surrogate_summary.json is missing",
+            "backend": backend,
+        }
+
+    if backend == "passive_nearest_observed":
+        return {
+            "status": "unknown",
+            "reason": "passive nearest-observed backend has no explicit CV/reliability estimate",
+            "backend": backend,
+            "surrogate_status": status,
+        }
+
+    if status == "ok":
+        return {
+            "status": "ok",
+            "reason": "surrogate summary status is ok",
+            "backend": backend,
+            "surrogate_status": status,
+        }
+
+    return {
+        "status": "weak",
+        "reason": f"surrogate summary status is {status!r}",
+        "backend": backend,
+        "surrogate_status": status,
+    }
+
+
+def _optimizer_recommendation_from_signals(signals: dict[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+
+    if int(signals.get("n_fit_eligible_total", 0)) <= 0:
+        return {
+            "optimizer_view": "unknown",
+            "reasons": ["no fit-eligible observations are available"],
+        }
+
+    novelty = signals.get("candidate_novelty", {}) or {}
+    boundary = signals.get("boundary_saturation", {}) or {}
+    surrogate = signals.get("surrogate_reliability", {}) or {}
+
+    median_dist = novelty.get("median_nearest_known_scaled_dist")
+    max_boundary = boundary.get("fraction_candidates_near_boundary")
+    improvements = signals.get("best_score_improvement", {}) or {}
+
+    finite_improvements = [
+        float(v)
+        for v in improvements.values()
+        if isinstance(v, (int, float)) and np.isfinite(v)
+    ]
+    any_positive_improvement = any(v > 0.0 for v in finite_improvements)
+
+    if isinstance(max_boundary, (int, float)) and max_boundary >= 0.85:
+        reasons.append(
+            "candidate batch is highly saturated near parameter-space boundary"
+        )
+        return {
+            "optimizer_view": "needs_human_review",
+            "reasons": reasons,
+        }
+
+    if (
+        isinstance(median_dist, (int, float))
+        and median_dist < 0.025
+        and finite_improvements
+        and not any_positive_improvement
+    ):
+        reasons.append(
+            "candidate novelty is low and no positive best-score improvement is visible"
+        )
+        return {
+            "optimizer_view": "stop_converged",
+            "reasons": reasons,
+        }
+
+    if surrogate.get("status") == "weak":
+        reasons.append("surrogate reliability is weak")
+        return {
+            "optimizer_view": "needs_human_review",
+            "reasons": reasons,
+        }
+
+    reasons.append("no optimizer-side stop condition triggered")
+    return {
+        "optimizer_view": "continue",
+        "reasons": reasons,
+    }
+
+
+def build_stopping_signals_document(
+    *,
+    config: OptimizerConfig,
+    iteration: int,
+    history: pd.DataFrame,
+    rec: pd.DataFrame | None,
+    boundary: pd.DataFrame,
+    surrogate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    objective_config = config.objective_config()
+    fit = _fit(history)
+
+    best = _build_best_score_signals(
+        fit,
+        iteration=iteration,
+        objective_config=objective_config,
+    )
+
+    signals: dict[str, Any] = {
+        **best,
+        "best_score_improvement_window": _build_improvement_window_signal(
+            fit,
+            window=3,
+        ),
+        "candidate_novelty": _build_candidate_novelty_signal(rec),
+        "boundary_saturation": _build_boundary_signal(boundary),
+        "surrogate_reliability": _build_surrogate_reliability_signal(
+            surrogate,
+            diagnostics={},
+        ),
+    }
+
+    return _json_clean(
+        {
+            "schema_version": 1,
+            "created_at": now_utc(),
+            "iteration": int(iteration),
+            "objective_config_id": objective_config.get("config_id"),
+            "signals": signals,
+            "recommendation": _optimizer_recommendation_from_signals(signals),
+            "non_goals": [
+                "does not submit jobs",
+                "does not call sbatch/srun/mpiexec/mpirun",
+                "does not launch WarpX",
+                "does not run analysis adapters",
+                "does not read HDF5/openPMD",
+                "does not delete data",
+                "does not mutate campaign workflow state",
+            ],
+        }
+    )
+
+
+def build_stopping_signals(config: OptimizerConfig, iteration: int) -> Path:
+    iter_dir = config.iteration_dir(iteration)
+    reports_dir = iter_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    obs = _optional_table(iter_dir / "inputs" / "observations.csv")
+    obj = _optional_table(iter_dir / "inputs" / "objective_table.csv")
+    rec = _optional_table(iter_dir / "outputs" / "recommended_candidates.tsv", sep="\t")
+    surrogate = read_json_optional(iter_dir / "outputs" / "surrogate_summary.json")
+
+    hist = _history(obs, obj)
+    boundary = build_boundary_saturation_summary(rec, config.parameter_space())
+
+    document = build_stopping_signals_document(
+        config=config,
+        iteration=iteration,
+        history=hist,
+        rec=rec,
+        boundary=boundary,
+        surrogate=surrogate,
+    )
+
+    return write_json(reports_dir / "stopping_signals.json", document)
+
+
 def build_report(config: OptimizerConfig, iteration: int) -> dict[str, Path]:
     iter_dir = config.iteration_dir(iteration)
     plot_dir = iter_dir / "plots"
@@ -583,6 +969,15 @@ def build_report(config: OptimizerConfig, iteration: int) -> dict[str, Path]:
     param_conv = build_parameter_convergence(hist)
     acq = build_acquisition_summary(rec)
     boundary = build_boundary_saturation_summary(rec, config.parameter_space())
+
+    stopping_signals = build_stopping_signals_document(
+        config=config,
+        iteration=iteration,
+        history=hist,
+        rec=rec,
+        boundary=boundary,
+        surrogate=surrogate,
+    )
 
     paths = {
         "convergence_summary_csv": write_csv(
@@ -611,6 +1006,10 @@ def build_report(config: OptimizerConfig, iteration: int) -> dict[str, Path]:
             _surrogate_diagnostics(
                 hist, obj, rec, surrogate, config.objective_config()
             ),
+        ),
+        "stopping_signals_json": write_json(
+            reports_dir / "stopping_signals.json",
+            stopping_signals,
         ),
     }
 

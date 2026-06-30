@@ -14,6 +14,7 @@ class TestCliModules(unittest.TestCase):
             "campaign_optimizer.cli.run_iteration",
             "campaign_optimizer.cli.build_candidate_batch",
             "campaign_optimizer.cli.build_report",
+            "campaign_optimizer.cli.build_stopping_signals",
         ]
 
         for name in modules:
