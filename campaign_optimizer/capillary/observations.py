@@ -12,6 +12,7 @@ from campaign_optimizer.io import (
     read_json_optional,
     read_table,
     write_csv,
+    write_json,
 )
 
 from .parameters import PARAMETER_COLUMNS, canonical_parameters_from_case_row
@@ -179,7 +180,17 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
 
     all_rows: list[dict[str, Any]] = []
 
-    for source in config.source_campaigns():
+    effective_sources = config.source_campaigns_for_iteration(iteration)
+    write_json(
+        inputs_dir / "source_campaigns_effective.json",
+        {
+            "schema_version": 1,
+            "iteration": iteration,
+            "source_campaigns": effective_sources,
+        },
+    )
+
+    for source in effective_sources:
         campaign_root = resolve_path(config.base_dir, source["campaign_root"])
         cases_path = resolve_path(campaign_root, source.get("cases_tsv", "cases.tsv"))
         campaign_name = source.get("campaign_name", campaign_root.name)

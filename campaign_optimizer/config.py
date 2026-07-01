@@ -46,6 +46,21 @@ DEFAULT_CANDIDATE_BATCH = {
     },
 }
 
+DEFAULT_REDUCED_OUTPUTS = {
+    "guiding_metrics": "guiding_metrics.csv",
+    "particle_summary": "particle_analysis/particle_summary.csv",
+    "acceptance_curves": "particle_analysis/particle_acceptance_curves.csv",
+}
+
+DEFAULT_OPTIMIZATION_HISTORY = {
+    "enabled": "auto",
+    "optimization_name": None,
+    "iterations_root": "iterations",
+    "cases_tsv": "cases.tsv",
+    "campaign_name_template": "{optimization_name}_iter_{iteration:03d}",
+    "reduced_outputs": dict(DEFAULT_REDUCED_OUTPUTS),
+}
+
 
 @dataclass(frozen=True)
 class OptimizerConfig:
@@ -71,7 +86,114 @@ class OptimizerConfig:
             raise ValueError(
                 "optimizer.json must define a non-empty source_campaigns list"
             )
-        return value
+        return [dict(source) for source in value]
+
+    def optimization_history_config(self) -> dict[str, Any]:
+        value = self.data.get("optimization_history", {}) or {}
+        if not isinstance(value, dict):
+            raise ValueError("optimizer.json optimization_history must be an object")
+
+        cfg = {
+            "enabled": DEFAULT_OPTIMIZATION_HISTORY["enabled"],
+            "optimization_name": self.base_dir.name,
+            "iterations_root": DEFAULT_OPTIMIZATION_HISTORY["iterations_root"],
+            "cases_tsv": DEFAULT_OPTIMIZATION_HISTORY["cases_tsv"],
+            "campaign_name_template": DEFAULT_OPTIMIZATION_HISTORY[
+                "campaign_name_template"
+            ],
+            "reduced_outputs": dict(DEFAULT_OPTIMIZATION_HISTORY["reduced_outputs"]),
+        }
+        cfg.update({k: v for k, v in value.items() if k != "reduced_outputs"})
+
+        reduced_outputs = dict(cfg["reduced_outputs"])
+        reduced_outputs.update(value.get("reduced_outputs", {}) or {})
+        cfg["reduced_outputs"] = reduced_outputs
+
+        if not cfg.get("optimization_name"):
+            cfg["optimization_name"] = self.base_dir.name
+
+        return cfg
+
+    def optimization_history_enabled(self) -> bool:
+        cfg = self.optimization_history_config()
+        enabled = cfg.get("enabled", "auto")
+
+        if isinstance(enabled, bool):
+            return enabled
+
+        if str(enabled).strip().lower() == "auto":
+            iterations_root = resolve_path(self.base_dir, cfg["iterations_root"])
+            return iterations_root.is_dir()
+
+        return str(enabled).strip().lower() in {"1", "true", "yes", "on"}
+
+    def optimization_history_source_campaigns(
+        self, iteration: int
+    ) -> list[dict[str, Any]]:
+        if iteration < 0:
+            raise ValueError("iteration must be non-negative")
+
+        if not self.optimization_history_enabled():
+            return []
+
+        cfg = self.optimization_history_config()
+        iterations_root = resolve_path(self.base_dir, cfg["iterations_root"])
+        optimization_name = str(cfg["optimization_name"])
+        name_template = str(cfg["campaign_name_template"])
+        cases_tsv = str(cfg["cases_tsv"])
+        reduced_outputs = dict(cfg["reduced_outputs"])
+
+        sources: list[dict[str, Any]] = []
+
+        for previous_iteration in range(iteration):
+            campaign_root = iterations_root / f"iter_{previous_iteration:03d}"
+
+            if not campaign_root.is_dir():
+                continue
+
+            if not (campaign_root / cases_tsv).is_file():
+                continue
+
+            campaign_name = name_template.format(
+                optimization_name=optimization_name,
+                iteration=previous_iteration,
+                iteration_name=f"iter_{previous_iteration:03d}",
+            )
+
+            sources.append(
+                {
+                    "campaign_name": campaign_name,
+                    "campaign_root": str(campaign_root),
+                    "cases_tsv": cases_tsv,
+                    "reduced_outputs": dict(reduced_outputs),
+                    "source_kind": "optimization_history",
+                    "history_iteration": previous_iteration,
+                }
+            )
+
+        return sources
+
+    def source_campaigns_for_iteration(self, iteration: int) -> list[dict[str, Any]]:
+        if iteration < 0:
+            raise ValueError("iteration must be non-negative")
+
+        merged: list[dict[str, Any]] = []
+        seen_roots: set[str] = set()
+
+        for source in [
+            *self.source_campaigns(),
+            *self.optimization_history_source_campaigns(iteration),
+        ]:
+            campaign_root = resolve_path(self.base_dir, source["campaign_root"])
+            root_key = str(campaign_root.resolve())
+
+            if root_key in seen_roots:
+                continue
+
+            seen_roots.add(root_key)
+            merged.append(dict(source))
+
+        return merged
 
     def objective_config(self) -> dict[str, Any]:
         value = dict(DEFAULT_OBJECTIVE_CONFIG)

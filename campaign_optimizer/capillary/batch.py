@@ -171,17 +171,26 @@ def compute_cap_rmax_um(
     return float(value)
 
 
-def _source_campaigns_for_plan(config: OptimizerConfig) -> list[dict[str, str]]:
+def _source_campaigns_for_plan(
+    config: OptimizerConfig,
+    iteration: int,
+) -> list[dict[str, Any]]:
     out = []
-    for source in config.source_campaigns():
-        out.append(
-            {
-                "campaign_name": str(source.get("campaign_name", "")),
-                "campaign_root": str(source.get("campaign_root", "")),
-                "cases_tsv": str(source.get("cases_tsv", "cases.tsv")),
-                "campaign_json": str(source.get("campaign_json", "campaign.json")),
-            }
-        )
+    for source in config.source_campaigns_for_iteration(iteration):
+        item = {
+            "campaign_name": str(source.get("campaign_name", "")),
+            "campaign_root": str(source.get("campaign_root", "")),
+            "cases_tsv": str(source.get("cases_tsv", "cases.tsv")),
+            "campaign_json": str(source.get("campaign_json", "campaign.json")),
+        }
+
+        # Preserve audit metadata for dynamically discovered optimization history.
+        for key in ["source_kind", "history_iteration"]:
+            if key in source:
+                item[key] = source[key]
+
+        out.append(item)
+
     return out
 
 
@@ -322,7 +331,7 @@ def write_batch_campaign_plan(
         ),
         "candidate_batch": rel(candidate_batch_path),
         "recommended_candidates": rel(recommended_candidates_path),
-        "source_campaigns": _source_campaigns_for_plan(config),
+        "source_campaigns": _source_campaigns_for_plan(config, iteration),
         "campaign_template": dict(batch_config.get("campaign_template", {}) or {}),
         "expected_workflow": list(EXPECTED_WORKFLOW),
         "non_goals": list(NON_GOALS),
