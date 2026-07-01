@@ -247,6 +247,48 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
         with self.assertRaises(ValueError):
             assert_not_raw_diagnostic_path("case/diags/fields/openpmd_000001.h5")
 
+    def test_objectives_fall_back_past_nan_candidate_metrics(self) -> None:
+        cfg = load_optimizer_config(self.optimizer_config_path)
+
+        build_observations(cfg, 0)
+
+        obs_path = cfg.iteration_dir(0) / "inputs" / "observations.csv"
+        obs = read_table(obs_path)
+
+        target = obs["source_case_id"].astype(str) == "2"
+
+        # Simulate the CLPU situation:
+        # the preferred comparison/global metric column exists but is NaN,
+        # while the direct per-case metric is valid.
+        obs.loc[target, "metric_particle_beam_transverse_quality_score_channel"] = (
+            float("nan")
+        )
+        obs.loc[target, "metric_particle_beam_transverse_quality_score"] = 0.25
+
+        obs.loc[target, "metric_comparison_beam_beamlike_gain_score"] = float("nan")
+        obs.loc[target, "metric_particle_beamlike_score"] = 0.75
+
+        obs.to_csv(obs_path, index=False)
+
+        obj_path = build_objectives(cfg, 0)
+        obj = read_table(obj_path)
+
+        row = obj[obj["observation_id"].str.contains("002_f40_chan")].iloc[0]
+
+        self.assertEqual(row["score_transverse_v1_status"], "ok")
+        self.assertEqual(
+            row["score_transverse_v1_source_metric"],
+            "metric_particle_beam_transverse_quality_score",
+        )
+        self.assertAlmostEqual(float(row["score_transverse_v1"]), 0.25)
+
+        self.assertEqual(row["score_beamlike_v1_status"], "ok")
+        self.assertEqual(
+            row["score_beamlike_v1_source_metric"],
+            "metric_particle_beamlike_score",
+        )
+        self.assertAlmostEqual(float(row["score_beamlike_v1"]), 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

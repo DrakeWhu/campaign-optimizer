@@ -19,6 +19,7 @@ SCORE_SPECS = {
     "score_beamlike_v1": [
         "metric_comparison_beam_beamlike_gain_score",
         "metric_particle_beamlike_gain_score",
+        "metric_particle_beamlike_score",
     ],
     "score_transverse_v1": [
         "metric_particle_beam_transverse_quality_score_channel",
@@ -33,6 +34,8 @@ SCORE_SPECS = {
 def _first_available_numeric(
     row: pd.Series, candidates: list[str]
 ) -> tuple[float, str, str]:
+    first_invalid: tuple[str, str] | None = None
+
     for col in candidates:
         if col not in row.index:
             continue
@@ -40,12 +43,20 @@ def _first_available_numeric(
         value = pd.to_numeric(pd.Series([row[col]]), errors="coerce").iloc[0]
 
         if pd.isna(value):
-            return float("nan"), "invalid_nan", col
+            if first_invalid is None:
+                first_invalid = ("invalid_nan", col)
+            continue
 
         if not np.isfinite(float(value)):
-            return float("nan"), "invalid_infinite", col
+            if first_invalid is None:
+                first_invalid = ("invalid_infinite", col)
+            continue
 
         return float(value), "ok", col
+
+    if first_invalid is not None:
+        status, col = first_invalid
+        return float("nan"), status, col
 
     return float("nan"), "missing_metric", ""
 
