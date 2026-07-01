@@ -159,7 +159,8 @@ def _predict_from_nearest(
     nearest = np.argsort(distances, axis=1)[:, : max(1, nearest_k)]
     nearest_dist = np.take_along_axis(distances, nearest, axis=1)
 
-    out["nearest_known_scaled_dist"] = nearest_dist[:, 0]
+    if "nearest_known_scaled_dist" not in out.columns:
+        out["nearest_known_scaled_dist"] = nearest_dist[:, 0]
 
     weights = 1.0 / np.maximum(nearest_dist, 1.0e-9)
     weights = weights / weights.sum(axis=1, keepdims=True)
@@ -266,6 +267,34 @@ def _recommendation_backend_name(rec_cfg: dict[str, Any]) -> str:
     return str(rec_cfg.get("backend", "passive_nearest_observed")).strip().lower()
 
 
+def _add_nearest_known_scaled_distance(
+    *,
+    history: pd.DataFrame,
+    candidates: pd.DataFrame,
+    parameter_space: dict[str, Any],
+) -> pd.DataFrame:
+    """Add nearest-known distance in scaled parameter space.
+
+    This is backend-independent metadata used for novelty filtering and
+    reporting. Passive nearest-observed prediction also computes distances
+    internally for weights, but AxModelManager does not, so the column must
+    exist before backend-specific prediction.
+    """
+
+    out = candidates.copy()
+
+    x_hist = scaled_parameter_array(history, parameter_space)
+    x_cand = scaled_parameter_array(candidates, parameter_space)
+
+    if len(x_hist) == 0:
+        raise ValueError("Cannot compute nearest-known distance with empty history")
+
+    distances = np.sqrt(((x_cand[:, None, :] - x_hist[None, :, :]) ** 2).sum(axis=2))
+    out["nearest_known_scaled_dist"] = distances.min(axis=1)
+
+    return out
+
+
 def _predict_candidates(
     *,
     history: pd.DataFrame,
@@ -336,6 +365,11 @@ def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
         raise ValueError("No fit-eligible rows with finite parameter columns")
 
     candidates = build_candidate_cloud(obs, obj, parameter_space, rec_cfg)
+    candidates = _add_nearest_known_scaled_distance(
+        history=history,
+        candidates=candidates,
+        parameter_space=parameter_space,
+    )
 
     pred, surrogate_summary = _predict_candidates(
         history=history,
