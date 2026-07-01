@@ -48,6 +48,7 @@ DEFAULT_CANDIDATE_BATCH = {
 
 DEFAULT_REDUCED_OUTPUTS = {
     "guiding_metrics": "guiding_metrics.csv",
+    "guiding_singlecase_score": "guiding_singlecase_score.csv",
     "particle_summary": "particle_analysis/particle_summary.csv",
     "acceptance_curves": "particle_analysis/particle_acceptance_curves.csv",
 }

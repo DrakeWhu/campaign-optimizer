@@ -6,7 +6,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from campaign_optimizer.config import OptimizerConfig, resolve_path
+from campaign_optimizer.config import (
+    DEFAULT_REDUCED_OUTPUTS,
+    OptimizerConfig,
+    resolve_path,
+)
 from campaign_optimizer.io import (
     read_first_row_csv,
     read_json_optional,
@@ -88,6 +92,27 @@ def _load_global_tables(
 
 def _metric_from_first_row(prefix: str, row: dict[str, Any]) -> dict[str, Any]:
     return {f"metric_{prefix}_{key}": value for key, value in row.items()}
+
+
+def _metric_from_reduced_output_row(
+    prefix: str,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Return metric columns from a reduced-output row.
+
+    Standard analysis sidecars may already export optimizer-facing columns with
+    a metric_* prefix. In that case, keep the names as-is instead of adding a
+    second prefix. Legacy/plain rows still receive metric_<prefix>_.
+    """
+
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        name = str(key)
+        if name.startswith("metric_"):
+            out[name] = value
+        else:
+            out[f"metric_{prefix}_{name}"] = value
+    return out
 
 
 def _read_first_row_csv(path: Path) -> tuple[dict[str, Any], str, str]:
@@ -309,6 +334,7 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 "baseline_match_status": "not_applicable",
                 "baseline_match_reason": "",
                 "guiding_metrics_status": "not_checked",
+                "guiding_singlecase_score_status": "not_checked",
                 "particle_summary_status": "not_applicable"
                 if params.get("plasma_kind") == "vac"
                 else "not_checked",
@@ -319,7 +345,8 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 **params,
             }
 
-            reduced_outputs = source.get("reduced_outputs", {}) or {}
+            reduced_outputs = dict(DEFAULT_REDUCED_OUTPUTS)
+            reduced_outputs.update(source.get("reduced_outputs", {}) or {})
 
             particle_metrics: dict[str, Any] = {}
 
@@ -344,6 +371,24 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 if reason and not row["failure_reason"]:
                     row["failure_reason"] = reason
                 row.update(_metric_from_first_row("guiding", guiding_metrics))
+
+            if reduced_outputs.get("guiding_singlecase_score"):
+                singlecase_metrics, status, reason = _read_first_row_csv(
+                    cdir / reduced_outputs["guiding_singlecase_score"]
+                )
+                row["guiding_singlecase_score_status"] = status
+                if (
+                    reason
+                    and status != "missing_reduced_output"
+                    and not row["failure_reason"]
+                ):
+                    row["failure_reason"] = reason
+                row.update(
+                    _metric_from_reduced_output_row(
+                        "guiding_singlecase",
+                        singlecase_metrics,
+                    )
+                )
 
             if (
                 reduced_outputs.get("acceptance_curves")

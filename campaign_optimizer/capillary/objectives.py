@@ -13,6 +13,7 @@ from campaign_optimizer.state import stable_hash
 
 SCORE_SPECS = {
     "score_guiding_v1": [
+        "metric_guiding_singlecase_score_v1",
         "metric_guiding_final_score",
         "metric_guiding_score",
     ],
@@ -29,6 +30,25 @@ SCORE_SPECS = {
         "metric_acceptance_Q_Ege100MeV_theta10mrad_pC",
     ],
 }
+
+
+def _score_specs_from_config(objective_config: dict[str, Any]) -> dict[str, list[str]]:
+    specs = {score: list(columns) for score, columns in SCORE_SPECS.items()}
+
+    override = objective_config.get("score_specs", {}) or {}
+    if not isinstance(override, dict):
+        raise ValueError("objective.score_specs must be an object")
+
+    for score, columns in override.items():
+        if not isinstance(columns, list) or not all(
+            isinstance(col, str) and col for col in columns
+        ):
+            raise ValueError(
+                f"objective.score_specs[{score!r}] must be a non-empty list of strings"
+            )
+        specs[str(score)] = list(columns)
+
+    return specs
 
 
 def _first_available_numeric(
@@ -71,6 +91,7 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
     objective_config = config.objective_config()
     objective_hash = stable_hash(objective_config)
     required_for_fit = set(objective_config.get("required_scores_for_fit", []))
+    score_specs = _score_specs_from_config(objective_config)
 
     rows: list[dict[str, Any]] = []
 
@@ -89,7 +110,7 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
         plasma_kind = str(row.get("plasma_kind", "")).strip().lower()
 
         if plasma_kind != "chan":
-            for score in SCORE_SPECS:
+            for score in score_specs:
                 out[score] = float("nan")
                 out[f"{score}_status"] = "not_applicable_baseline_or_vacuum"
                 out[f"{score}_direction"] = "maximize"
@@ -105,7 +126,7 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
 
         failures = []
 
-        for score, source_cols in SCORE_SPECS.items():
+        for score, source_cols in score_specs.items():
             value, status, source_col = _first_available_numeric(row, source_cols)
 
             out[score] = value

@@ -1,0 +1,281 @@
+diff --git a/campaign_optimizer/capillary/objectives.py b/campaign_optimizer/capillary/objectives.py
+index 037e7ec..c036311 100644
+--- a/campaign_optimizer/capillary/objectives.py
++++ b/campaign_optimizer/capillary/objectives.py
+@@ -11,8 +11,9 @@ from campaign_optimizer.io import read_table, write_csv
+ from campaign_optimizer.state import stable_hash
+ 
+ 
+-SCORE_SPECS = {
++DEFAULT_SCORE_SPECS = {
+     "score_guiding_v1": [
++        "metric_guiding_singlecase_score_v1",
+         "metric_guiding_final_score",
+         "metric_guiding_score",
+     ],
+@@ -31,6 +32,32 @@ SCORE_SPECS = {
+ }
+ 
+ 
++def _score_specs_from_config(objective_config: dict[str, Any]) -> dict[str, list[str]]:
++    specs = {score: list(cols) for score, cols in DEFAULT_SCORE_SPECS.items()}
++    configured = objective_config.get("score_specs")
++
++    if configured is None:
++        return specs
++
++    if not isinstance(configured, dict):
++        raise ValueError("objective.score_specs must be an object")
++
++    for score, cols in configured.items():
++        if not isinstance(score, str) or not score:
++            raise ValueError("objective.score_specs keys must be non-empty strings")
++        if not isinstance(cols, list) or not cols:
++            raise ValueError(
++                f"objective.score_specs[{score!r}] must be a non-empty list"
++            )
++        if not all(isinstance(col, str) and col for col in cols):
++            raise ValueError(
++                f"objective.score_specs[{score!r}] must contain non-empty strings"
++            )
++        specs[score] = list(cols)
++
++    return specs
++
++
+ def _first_available_numeric(
+     row: pd.Series, candidates: list[str]
+ ) -> tuple[float, str, str]:
+@@ -69,8 +96,11 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
+     obs = read_table(observations_path)
+ 
+     objective_config = config.objective_config()
+-    objective_hash = stable_hash(objective_config)
+     required_for_fit = set(objective_config.get("required_scores_for_fit", []))
++    score_specs = _score_specs_from_config(objective_config)
++    objective_config_effective = dict(objective_config)
++    objective_config_effective["score_specs"] = score_specs
++    objective_hash = stable_hash(objective_config_effective)
+ 
+     rows: list[dict[str, Any]] = []
+ 
+@@ -89,7 +119,7 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
+         plasma_kind = str(row.get("plasma_kind", "")).strip().lower()
+ 
+         if plasma_kind != "chan":
+-            for score in SCORE_SPECS:
++            for score in score_specs:
+                 out[score] = float("nan")
+                 out[f"{score}_status"] = "not_applicable_baseline_or_vacuum"
+                 out[f"{score}_direction"] = "maximize"
+@@ -105,7 +135,7 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
+ 
+         failures = []
+ 
+-        for score, source_cols in SCORE_SPECS.items():
++        for score, source_cols in score_specs.items():
+             value, status, source_col = _first_available_numeric(row, source_cols)
+ 
+             out[score] = value
+diff --git a/campaign_optimizer/capillary/observations.py b/campaign_optimizer/capillary/observations.py
+index df0468d..3040b60 100644
+--- a/campaign_optimizer/capillary/observations.py
++++ b/campaign_optimizer/capillary/observations.py
+@@ -6,7 +6,11 @@ from typing import Any
+ import numpy as np
+ import pandas as pd
+ 
+-from campaign_optimizer.config import OptimizerConfig, resolve_path
++from campaign_optimizer.config import (
++    DEFAULT_REDUCED_OUTPUTS,
++    OptimizerConfig,
++    resolve_path,
++)
+ from campaign_optimizer.io import (
+     read_first_row_csv,
+     read_json_optional,
+@@ -90,6 +94,27 @@ def _metric_from_first_row(prefix: str, row: dict[str, Any]) -> dict[str, Any]:
+     return {f"metric_{prefix}_{key}": value for key, value in row.items()}
+ 
+ 
++def _metric_from_reduced_output_row(
++    prefix: str,
++    row: dict[str, Any],
++) -> dict[str, Any]:
++    """Return metric columns from a reduced-output row.
++
++    Standard analysis sidecars may already export optimizer-facing columns with
++    a metric_* prefix. In that case, keep the names as-is instead of adding a
++    second prefix. Legacy/plain rows still receive metric_<prefix>_.
++    """
++
++    out: dict[str, Any] = {}
++    for key, value in row.items():
++        name = str(key)
++        if name.startswith("metric_"):
++            out[name] = value
++        else:
++            out[f"metric_{prefix}_{name}"] = value
++    return out
++
++
+ def _read_first_row_csv(path: Path) -> tuple[dict[str, Any], str, str]:
+     metrics, status, reason = read_first_row_csv(path)
+     return metrics, status, reason
+@@ -309,6 +334,7 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
+                 "baseline_match_status": "not_applicable",
+                 "baseline_match_reason": "",
+                 "guiding_metrics_status": "not_checked",
++                "guiding_singlecase_score_status": "not_checked",
+                 "particle_summary_status": "not_applicable"
+                 if params.get("plasma_kind") == "vac"
+                 else "not_checked",
+@@ -319,7 +345,8 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
+                 **params,
+             }
+ 
+-            reduced_outputs = source.get("reduced_outputs", {}) or {}
++            reduced_outputs = dict(DEFAULT_REDUCED_OUTPUTS)
++            reduced_outputs.update(source.get("reduced_outputs", {}) or {})
+ 
+             particle_metrics: dict[str, Any] = {}
+ 
+@@ -345,6 +372,24 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
+                     row["failure_reason"] = reason
+                 row.update(_metric_from_first_row("guiding", guiding_metrics))
+ 
++            if reduced_outputs.get("guiding_singlecase_score"):
++                singlecase_metrics, status, reason = _read_first_row_csv(
++                    cdir / reduced_outputs["guiding_singlecase_score"]
++                )
++                row["guiding_singlecase_score_status"] = status
++                if (
++                    reason
++                    and status != "missing_reduced_output"
++                    and not row["failure_reason"]
++                ):
++                    row["failure_reason"] = reason
++                row.update(
++                    _metric_from_reduced_output_row(
++                        "guiding_singlecase",
++                        singlecase_metrics,
++                    )
++                )
++
+             if (
+                 reduced_outputs.get("acceptance_curves")
+                 and params.get("plasma_kind") != "vac"
+diff --git a/campaign_optimizer/config.py b/campaign_optimizer/config.py
+index 797bc04..5efc48f 100644
+--- a/campaign_optimizer/config.py
++++ b/campaign_optimizer/config.py
+@@ -48,6 +48,7 @@ DEFAULT_CANDIDATE_BATCH = {
+ 
+ DEFAULT_REDUCED_OUTPUTS = {
+     "guiding_metrics": "guiding_metrics.csv",
++    "guiding_singlecase_score": "guiding_singlecase_score.csv",
+     "particle_summary": "particle_analysis/particle_summary.csv",
+     "acceptance_curves": "particle_analysis/particle_acceptance_curves.csv",
+ }
+diff --git a/tests/test_capillary_optimizer_phase1.py b/tests/test_capillary_optimizer_phase1.py
+index 2690558..71ed02d 100644
+--- a/tests/test_capillary_optimizer_phase1.py
++++ b/tests/test_capillary_optimizer_phase1.py
+@@ -25,6 +25,7 @@ def make_case(
+     state: str = "Reduced_validated",
+     *,
+     transverse: float | None = 3.0,
++    singlecase_score: float | None = None,
+ ) -> None:
+     case_dir = root / name
+     (case_dir / "particle_analysis").mkdir(parents=True, exist_ok=True)
+@@ -54,6 +55,18 @@ def make_case(
+         ]
+     ).to_csv(case_dir / "guiding_metrics.csv", index=False)
+ 
++    if singlecase_score is not None:
++        pd.DataFrame(
++            [
++                {
++                    "metric_guiding_singlecase_status": "ok",
++                    "metric_guiding_singlecase_score_v1": singlecase_score,
++                    "metric_guiding_waist_growth_component_v1": 0.9,
++                    "metric_guiding_a0_retention_component_v1": 0.8,
++                }
++            ]
++        ).to_csv(case_dir / "guiding_singlecase_score.csv", index=False)
++
+     row = {
+         "charge_hot_pC": 2.0,
+         "E95_hot_MeV": 100.0,
+@@ -127,7 +140,12 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
+ 
+         cases.to_csv(root / "cases.tsv", sep="\t", index=False)
+ 
+-        make_case(root, str(cases.iloc[0]["CASE_NAME"]), transverse=4.0)
++        make_case(
++            root,
++            str(cases.iloc[0]["CASE_NAME"]),
++            transverse=4.0,
++            singlecase_score=42.0,
++        )
+         make_case(root, str(cases.iloc[1]["CASE_NAME"]), transverse=2.0)
+         make_case(root, str(cases.iloc[2]["CASE_NAME"]), transverse=None)
+ 
+@@ -206,6 +224,56 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
+         self.assertIn("metric_guiding_final_score", obs.columns)
+         self.assertTrue(obs["reduced_validation_status"].eq("ok").all())
+ 
++
++    def test_singlecase_guiding_sidecar_is_ingested_and_preferred(self) -> None:
++        cfg = load_optimizer_config(self.optimizer_config_path)
++
++        build_observations(cfg, 0)
++        obs = read_table(cfg.iteration_dir(0) / "inputs" / "observations.csv")
++
++        row = obs[obs["observation_id"].str.contains("000_f20_chan")].iloc[0]
++        self.assertEqual(row["guiding_singlecase_score_status"], "ok")
++        self.assertIn("metric_guiding_singlecase_score_v1", obs.columns)
++        self.assertAlmostEqual(
++            float(row["metric_guiding_singlecase_score_v1"]),
++            42.0,
++        )
++
++        obj_path = build_objectives(cfg, 0)
++        obj = read_table(obj_path)
++        obj_row = obj[obj["observation_id"].str.contains("000_f20_chan")].iloc[0]
++
++        self.assertEqual(obj_row["score_guiding_v1_status"], "ok")
++        self.assertEqual(
++            obj_row["score_guiding_v1_source_metric"],
++            "metric_guiding_singlecase_score_v1",
++        )
++        self.assertAlmostEqual(float(obj_row["score_guiding_v1"]), 42.0)
++
++    def test_configurable_score_specs_can_override_guiding_source(self) -> None:
++        cfg_data = json.loads(self.optimizer_config_path.read_text())
++        cfg_data["objective"] = {
++            "schema_version": 1,
++            "config_id": "test_objectives_global_guiding",
++            "score_specs": {
++                "score_guiding_v1": ["metric_guiding_final_score"],
++            },
++        }
++        self.optimizer_config_path.write_text(json.dumps(cfg_data), encoding="utf-8")
++
++        cfg = load_optimizer_config(self.optimizer_config_path)
++
++        build_observations(cfg, 0)
++        obj_path = build_objectives(cfg, 0)
++        obj = read_table(obj_path)
++        row = obj[obj["observation_id"].str.contains("000_f20_chan")].iloc[0]
++
++        self.assertEqual(
++            row["score_guiding_v1_source_metric"],
++            "metric_guiding_final_score",
++        )
++        self.assertAlmostEqual(float(row["score_guiding_v1"]), 1.0)
++
+     def test_build_objectives_keeps_missing_as_nan_and_fit_ineligible(self) -> None:
+         cfg = load_optimizer_config(self.optimizer_config_path)
+ 

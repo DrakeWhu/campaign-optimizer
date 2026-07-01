@@ -25,6 +25,7 @@ def make_case(
     state: str = "Reduced_validated",
     *,
     transverse: float | None = 3.0,
+    singlecase_score: float | None = None,
 ) -> None:
     case_dir = root / name
     (case_dir / "particle_analysis").mkdir(parents=True, exist_ok=True)
@@ -53,6 +54,18 @@ def make_case(
             }
         ]
     ).to_csv(case_dir / "guiding_metrics.csv", index=False)
+
+    if singlecase_score is not None:
+        pd.DataFrame(
+            [
+                {
+                    "metric_guiding_singlecase_status": "ok",
+                    "metric_guiding_singlecase_score_v1": singlecase_score,
+                    "metric_guiding_waist_growth_component_v1": 0.9,
+                    "metric_guiding_a0_retention_component_v1": 0.8,
+                }
+            ]
+        ).to_csv(case_dir / "guiding_singlecase_score.csv", index=False)
 
     row = {
         "charge_hot_pC": 2.0,
@@ -127,7 +140,12 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
 
         cases.to_csv(root / "cases.tsv", sep="\t", index=False)
 
-        make_case(root, str(cases.iloc[0]["CASE_NAME"]), transverse=4.0)
+        make_case(
+            root,
+            str(cases.iloc[0]["CASE_NAME"]),
+            transverse=4.0,
+            singlecase_score=42.0,
+        )
         make_case(root, str(cases.iloc[1]["CASE_NAME"]), transverse=2.0)
         make_case(root, str(cases.iloc[2]["CASE_NAME"]), transverse=None)
 
@@ -288,6 +306,70 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
             "metric_particle_beamlike_score",
         )
         self.assertAlmostEqual(float(row["score_beamlike_v1"]), 0.75)
+
+    def test_objective_score_specs_can_be_configured(self) -> None:
+        cfg_path = self.optimizer_config_path
+        data = json.loads(cfg_path.read_text())
+
+        data["objective"] = {
+            "schema_version": 1,
+            "config_id": "test_configurable_score_specs",
+            "required_scores_for_fit": [
+                "score_guiding_v1",
+                "score_beamlike_v1",
+                "score_transverse_v1",
+            ],
+            "score_specs": {
+                "score_guiding_v1": ["metric_guiding_a0_peak"],
+                "score_beamlike_v1": ["metric_particle_charge_hot_pC"],
+                "score_transverse_v1": [
+                    "metric_particle_beam_transverse_quality_score"
+                ],
+            },
+        }
+
+        cfg_path.write_text(json.dumps(data), encoding="utf-8")
+
+        cfg = load_optimizer_config(cfg_path)
+        build_observations(cfg, 0)
+        obj_path = build_objectives(cfg, 0)
+        obj = read_table(obj_path)
+
+        eligible = obj[obj["fit_eligible"].astype(str).str.lower() == "true"]
+        self.assertGreaterEqual(len(eligible), 2)
+
+        row = eligible.iloc[0]
+        self.assertEqual(
+            row["score_guiding_v1_source_metric"], "metric_guiding_a0_peak"
+        )
+        self.assertEqual(
+            row["score_beamlike_v1_source_metric"], "metric_particle_charge_hot_pC"
+        )
+
+    def test_singlecase_guiding_sidecar_is_ingested_and_preferred(self) -> None:
+        cfg = load_optimizer_config(self.optimizer_config_path)
+
+        build_observations(cfg, 0)
+        obs = read_table(cfg.iteration_dir(0) / "inputs" / "observations.csv")
+
+        row = obs[obs["observation_id"].str.contains("000_f20_chan")].iloc[0]
+        self.assertEqual(row["guiding_singlecase_score_status"], "ok")
+        self.assertIn("metric_guiding_singlecase_score_v1", obs.columns)
+        self.assertAlmostEqual(
+            float(row["metric_guiding_singlecase_score_v1"]),
+            42.0,
+        )
+
+        obj_path = build_objectives(cfg, 0)
+        obj = read_table(obj_path)
+        obj_row = obj[obj["observation_id"].str.contains("000_f20_chan")].iloc[0]
+
+        self.assertEqual(obj_row["score_guiding_v1_status"], "ok")
+        self.assertEqual(
+            obj_row["score_guiding_v1_source_metric"],
+            "metric_guiding_singlecase_score_v1",
+        )
+        self.assertAlmostEqual(float(obj_row["score_guiding_v1"]), 42.0)
 
 
 if __name__ == "__main__":
