@@ -90,6 +90,59 @@ def _metric_from_first_row(prefix: str, row: dict[str, Any]) -> dict[str, Any]:
     return {f"metric_{prefix}_{key}": value for key, value in row.items()}
 
 
+def _read_first_row_csv(path: Path) -> tuple[dict[str, Any], str, str]:
+    metrics, status, reason = read_first_row_csv(path)
+    return metrics, status, reason
+
+
+def _read_guiding_metrics_row(
+    path: Path,
+    *,
+    particle_metrics: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str, str]:
+    if not path.is_file():
+        return {}, "missing_reduced_output", f"missing file: {path}"
+
+    try:
+        df = read_table(path)
+    except Exception as exc:
+        return {}, "analysis_failed", f"csv read failed: {exc}"
+
+    if df.empty:
+        return {}, "missing_metric", f"empty csv: {path}"
+
+    target_iteration = None
+    if particle_metrics:
+        target_iteration = particle_metrics.get("target_guiding_iteration")
+
+    if target_iteration is not None and "iteration" in df.columns:
+        target = pd.to_numeric(pd.Series([target_iteration]), errors="coerce").iloc[0]
+        iterations = pd.to_numeric(df["iteration"], errors="coerce")
+
+        if not pd.isna(target):
+            matches = df.loc[iterations == target]
+            if not matches.empty:
+                out = dict(matches.iloc[0])
+                out["row_policy"] = "target_guiding_iteration"
+                out["row_policy_target_iteration"] = target_iteration
+                return out, "ok", ""
+
+            return (
+                {},
+                "missing_metric",
+                f"guiding_metrics.csv has no row for target_guiding_iteration={target_iteration}",
+            )
+
+    if len(df) == 1:
+        out = dict(df.iloc[0])
+        out["row_policy"] = "single_row"
+        return out, "ok", ""
+
+    out = dict(df.iloc[-1])
+    out["row_policy"] = "last_row_fallback"
+    return out, "ok", ""
+
+
 def _add_global_metrics(
     base: pd.DataFrame,
     joint: pd.DataFrame | None,
@@ -268,26 +321,29 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
 
             reduced_outputs = source.get("reduced_outputs", {}) or {}
 
-            if reduced_outputs.get("guiding_metrics"):
-                metrics, status, reason = read_first_row_csv(
-                    cdir / reduced_outputs["guiding_metrics"]
-                )
-                row["guiding_metrics_status"] = status
-                if reason and not row["failure_reason"]:
-                    row["failure_reason"] = reason
-                row.update(_metric_from_first_row("guiding", metrics))
+            particle_metrics: dict[str, Any] = {}
 
             if (
                 reduced_outputs.get("particle_summary")
                 and params.get("plasma_kind") != "vac"
             ):
-                metrics, status, reason = read_first_row_csv(
+                particle_metrics, status, reason = _read_first_row_csv(
                     cdir / reduced_outputs["particle_summary"]
                 )
                 row["particle_summary_status"] = status
                 if reason and not row["failure_reason"]:
                     row["failure_reason"] = reason
-                row.update(_metric_from_first_row("particle", metrics))
+                row.update(_metric_from_first_row("particle", particle_metrics))
+
+            if reduced_outputs.get("guiding_metrics"):
+                guiding_metrics, status, reason = _read_guiding_metrics_row(
+                    cdir / reduced_outputs["guiding_metrics"],
+                    particle_metrics=particle_metrics,
+                )
+                row["guiding_metrics_status"] = status
+                if reason and not row["failure_reason"]:
+                    row["failure_reason"] = reason
+                row.update(_metric_from_first_row("guiding", guiding_metrics))
 
             if (
                 reduced_outputs.get("acceptance_curves")

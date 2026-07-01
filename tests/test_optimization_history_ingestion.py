@@ -144,6 +144,69 @@ class TestOptimizationHistoryIngestion(unittest.TestCase):
         self.assertIn("external_baseline", names)
         self.assertIn("clpu_capillary_guiding_bo_001_iter_001", names)
 
+    def test_guiding_metrics_uses_particle_target_iteration_for_time_series(
+        self,
+    ) -> None:
+        cfg = load_optimizer_config(self.config_path)
+
+        iter_root = self.root / "iterations" / "iter_001"
+        case_dirs = [
+            p for p in iter_root.iterdir() if p.is_dir() and p.name != "array_logs"
+        ]
+        self.assertEqual(len(case_dirs), 1)
+        case_dir = case_dirs[0]
+
+        pd.DataFrame(
+            [
+                {
+                    "iteration": 0,
+                    "time_fs": 0.0,
+                    "a0_peak": float("nan"),
+                    "peak_I_proxy": 0.0,
+                    "energy_proxy": 0.0,
+                    "propagation_mm": 0.0,
+                },
+                {
+                    "iteration": 148000,
+                    "time_fs": 82600.0,
+                    "a0_peak": 1.5,
+                    "peak_I_proxy": 2.0e25,
+                    "energy_proxy": 1.0e10,
+                    "propagation_mm": 24.763,
+                },
+                {
+                    "iteration": 448000,
+                    "time_fs": 250000.0,
+                    "a0_peak": 0.01,
+                    "peak_I_proxy": 1.0e18,
+                    "energy_proxy": 1.0e4,
+                    "propagation_mm": 74.95,
+                },
+            ]
+        ).to_csv(case_dir / "guiding_metrics.csv", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "target_guiding_iteration": 148000,
+                    "beamlike_score": 0.25,
+                    "beam_transverse_quality_score": 0.5,
+                }
+            ]
+        ).to_csv(case_dir / "particle_analysis" / "particle_summary.csv", index=False)
+
+        obs_path = build_observations(cfg, 2)
+        obs = read_table(obs_path)
+
+        row = obs[
+            obs["source_campaign_name"] == "clpu_capillary_guiding_bo_001_iter_001"
+        ].iloc[0]
+
+        self.assertEqual(int(row["metric_guiding_iteration"]), 148000)
+        self.assertAlmostEqual(float(row["metric_guiding_a0_peak"]), 1.5)
+        self.assertAlmostEqual(float(row["metric_guiding_propagation_mm"]), 24.763)
+        self.assertEqual(row["metric_guiding_row_policy"], "target_guiding_iteration")
+
 
 if __name__ == "__main__":
     unittest.main()
