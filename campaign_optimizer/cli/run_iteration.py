@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 from campaign_optimizer.capillary.batch import build_candidate_batch
 from campaign_optimizer.capillary.plotting import write_basic_plots
@@ -11,6 +12,21 @@ from campaign_optimizer.observations import build_observations
 from campaign_optimizer.recommend import propose_recommendations
 from campaign_optimizer.reporting import build_report
 from campaign_optimizer.state import write_optimizer_state
+
+
+def _recommendation_backend(cfg: Any) -> str:
+    """Return configured recommendation backend with backward-compatible fallback."""
+
+    data = getattr(cfg, "data", {}) or {}
+    rec_cfg = (data.get("recommendation", {}) or {}) if isinstance(data, dict) else {}
+
+    if hasattr(cfg, "recommendation_config"):
+        try:
+            rec_cfg = cfg.recommendation_config() or rec_cfg
+        except Exception:
+            pass
+
+    return str(rec_cfg.get("backend", "passive_nearest_observed"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_optimizer_config(args.config)
     iter_dir = cfg.iteration_dir(args.iteration)
+    backend = _recommendation_backend(cfg)
 
     observations = build_observations(cfg, args.iteration)
     objectives = build_objectives(cfg, args.iteration)
@@ -44,34 +61,25 @@ def main(argv: list[str] | None = None) -> int:
     obj = read_table(objectives)
     fit = obj[obj["fit_eligible"].astype(str).str.lower() == "true"]
 
+    # Backward-compatible placeholder. The real recommendation backend may
+    # overwrite this same file with a richer backend-specific summary.
     surrogate_summary = write_json(
         iter_dir / "outputs" / "surrogate_summary.json",
         {
             "schema_version": 1,
-            "backend": "passive_nearest_observed",
-            "status": "ok",
+            "backend": backend,
+            "surrogate_backend": backend,
+            "status": "pre_recommendation_placeholder",
             "fit_rows": int(len(fit)),
             "note": (
-                "Phase 1 passive baseline. Optimas/AxModelManager can replace "
-                "this backend without changing file contracts."
+                "Initial run_iteration summary. The recommendation backend may "
+                "overwrite this file with backend-specific surrogate diagnostics."
             ),
         },
     )
 
     recommendations = propose_recommendations(cfg, args.iteration)
     write_basic_plots(iter_dir)
-
-    state = write_optimizer_state(
-        iter_dir=iter_dir,
-        iteration=args.iteration,
-        config=cfg.data,
-        objective_config=cfg.objective_config(),
-        parameter_space=cfg.parameter_space(),
-        observations_path=observations,
-        objectives_path=objectives,
-        recommendations_path=recommendations,
-        surrogate_summary_path=surrogate_summary,
-    )
 
     report_paths = None
     if args.build_report:
@@ -84,6 +92,21 @@ def main(argv: list[str] | None = None) -> int:
             cfg,
             args.iteration,
         )
+
+    state = write_optimizer_state(
+        iter_dir=iter_dir,
+        iteration=args.iteration,
+        config=cfg.data,
+        objective_config=cfg.objective_config(),
+        parameter_space=cfg.parameter_space(),
+        observations_path=observations,
+        objectives_path=objectives,
+        recommendations_path=recommendations,
+        surrogate_summary_path=surrogate_summary,
+        candidate_batch_path=candidate_batch_path,
+        batch_campaign_plan_path=batch_campaign_plan_path,
+        backend=backend,
+    )
 
     print(f"[OK] observations     {observations}")
     print(f"[OK] objectives       {objectives}")

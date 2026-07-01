@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 
 from campaign_optimizer.config import OptimizerConfig
-from campaign_optimizer.io import read_table, write_tsv
+from campaign_optimizer.io import read_table, write_json, write_tsv
 
 from .parameters import DISTANCE_COLUMNS, scaled_parameter_array
 from .parsing import f_number_from_laser_case
+from .ax_backend import predict_with_ax_model_manager
 
 
 PREDICTED_SCORES = [
@@ -261,6 +262,57 @@ def _take_diverse_top(
     return pd.DataFrame(selected) if selected else ranked.head(n)
 
 
+def _recommendation_backend_name(rec_cfg: dict[str, Any]) -> str:
+    return str(rec_cfg.get("backend", "passive_nearest_observed")).strip().lower()
+
+
+def _predict_candidates(
+    *,
+    history: pd.DataFrame,
+    candidates: pd.DataFrame,
+    parameter_space: dict[str, Any],
+    rec_cfg: dict[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    backend = _recommendation_backend_name(rec_cfg)
+
+    if backend in {
+        "passive",
+        "passive_nearest",
+        "passive_nearest_observed",
+    }:
+        pred = _predict_from_nearest(
+            history,
+            candidates,
+            parameter_space,
+            int(rec_cfg.get("nearest_k", 8)),
+        )
+        summary = {
+            "schema_version": 1,
+            "backend": "passive_nearest_observed",
+            "surrogate_backend": "passive_nearest_observed",
+            "status": "ok",
+            "fit_rows": int(len(history)),
+            "candidate_rows": int(len(candidates)),
+            "nearest_k": int(rec_cfg.get("nearest_k", 8)),
+            "note": "Passive nearest-observed baseline; no GP surrogate fitted.",
+        }
+        return pred, summary
+
+    if backend in {
+        "optimas_ax",
+        "optimas_ax_model_manager",
+        "ax_model_manager",
+    }:
+        return predict_with_ax_model_manager(
+            history=history,
+            candidates=candidates,
+            parameter_space=parameter_space,
+            rec_cfg=rec_cfg,
+        )
+
+    raise ValueError(f"Unknown recommendation backend: {backend!r}")
+
+
 def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
     iter_dir = config.iteration_dir(iteration)
     outputs_dir = iter_dir / "outputs"
@@ -285,12 +337,14 @@ def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
 
     candidates = build_candidate_cloud(obs, obj, parameter_space, rec_cfg)
 
-    pred = _predict_from_nearest(
-        history,
-        candidates,
-        parameter_space,
-        int(rec_cfg.get("nearest_k", 8)),
+    pred, surrogate_summary = _predict_candidates(
+        history=history,
+        candidates=candidates,
+        parameter_space=parameter_space,
+        rec_cfg=rec_cfg,
     )
+
+    write_json(outputs_dir / "surrogate_summary.json", surrogate_summary)
 
     pred = pred[
         pred["nearest_known_scaled_dist"]
@@ -323,6 +377,11 @@ def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
     )
 
     recommended["recommendation_status"] = "recommended_placeholder_no_launch"
+    recommended["recommendation_backend"] = surrogate_summary["backend"]
+    recommended["surrogate_backend"] = surrogate_summary.get(
+        "surrogate_backend",
+        surrogate_summary["backend"],
+    )
     recommended["ranking_source"] = "score_balanced_conservative"
     recommended["acquisition_value"] = recommended["score_balanced_conservative"]
 
@@ -333,6 +392,8 @@ def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
         "rank",
         "recommendation_status",
         "candidate_source",
+        "recommendation_backend",
+        "surrogate_backend",
         "ranking_source",
         "acquisition_value",
         "laser_case",
