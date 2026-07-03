@@ -23,6 +23,7 @@ from campaign_optimizer.morbo import (
     save_region_records,
     write_recommended_candidates_tsv,
     BotorchRegionalConfig,
+    CategoricalRegionalPolicy,
 )
 
 from .parameters import DISTANCE_COLUMNS, scaled_parameter_array
@@ -286,6 +287,13 @@ def _morbo_suggestion_mode(rec_cfg: dict[str, Any]) -> str:
             rec_cfg.get("morbo_suggestion_mode", "regional_random"),
         )
     )
+
+
+def _morbo_categorical_policy(rec_cfg: dict[str, Any]) -> CategoricalRegionalPolicy:
+    payload = rec_cfg.get("categorical_policy", {}) or {}
+    if not isinstance(payload, dict):
+        raise ValueError("recommendation.categorical_policy must be an object")
+    return CategoricalRegionalPolicy.from_dict(payload)
 
 
 def _morbo_botorch_config(rec_cfg: dict[str, Any]) -> BotorchRegionalConfig:
@@ -604,6 +612,7 @@ def _propose_morbo_like_recommendations(
         state=previous_state,
         suggestion_mode=_morbo_suggestion_mode(rec_cfg),
         botorch_config=_morbo_botorch_config(rec_cfg),
+        categorical_policy=_morbo_categorical_policy(rec_cfg),
     )
     trials = _morbo_trials_from_history(history, objective_names=objective_names)
     sync_result = backend.sync(
@@ -673,6 +682,7 @@ def _propose_morbo_like_recommendations(
             "suggestion_mode": backend.suggestion_mode,
             "botorch_config": backend.botorch_config.as_dict(),
             "model_diagnostics": backend.last_model_diagnostics,
+            "categorical_policy": backend.categorical_policy.as_dict(),
             "note": (
                 "MORBO-like regional random backend; BoTorch model mode is not "
                 "enabled in this implementation."

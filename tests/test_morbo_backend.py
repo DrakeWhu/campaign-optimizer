@@ -304,6 +304,55 @@ class TestMorboLikeBackendNoBotorch(unittest.TestCase):
             },
         )
 
+    def test_regional_random_can_escape_categorical_region_when_policy_allows_it(
+        self,
+    ) -> None:
+        tiny_space = {
+            "laser_case": Choice(["f20", "f32", "f40"]),
+            "n0": FloatRange(1.0, 10.0),
+        }
+        spec = load_objective_spec(
+            spec_data={
+                "objectives": [
+                    {"name": "score_a", "metric": "score_a", "sense": "max"},
+                    {"name": "score_b", "metric": "score_b", "sense": "max"},
+                ]
+            }
+        )
+        trials = [
+            TrialInput(
+                "case_f20_a",
+                {"laser_case": "f20", "n0": 2.0},
+                {"score_a": 1.0, "score_b": 1.0},
+                "finished",
+            ),
+            TrialInput(
+                "case_f20_b",
+                {"laser_case": "f20", "n0": 3.0},
+                {"score_a": 2.0, "score_b": 2.0},
+                "finished",
+            ),
+        ]
+
+        backend = MorboLikeBackend(
+            tiny_space,
+            spec,
+            seed=5,
+            min_observations=2,
+            regional_policy=RegionalPolicy(max_regions=1, initial_radius=0.1),
+            categorical_policy={"mode": "epsilon", "epsilon": 1.0},
+        )
+        backend.sync(trials)
+
+        proposals = backend.suggest_proposals(4)
+
+        self.assertTrue(proposals)
+        self.assertTrue(
+            any(proposal.params["laser_case"] != "f20" for proposal in proposals)
+        )
+        for proposal in proposals:
+            self.assertEqual(proposal.strategy, "regional_random")
+
 
 if __name__ == "__main__":
     unittest.main()

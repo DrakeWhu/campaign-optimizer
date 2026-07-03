@@ -83,6 +83,11 @@ from .audit import (
     render_morbo_audit_text,
     write_morbo_audit_json,
 )
+from .categorical import (
+    CategoricalRegionalPolicy,
+    apply_categorical_regional_policy,
+    categorical_choice_parameter_names,
+)
 
 __all__ = [
     "ACTIVE",
@@ -153,4 +158,7 @@ __all__ = [
     "audit_morbo_outputs",
     "render_morbo_audit_text",
     "write_morbo_audit_json",
+    "CategoricalRegionalPolicy",
+    "apply_categorical_regional_policy",
+    "categorical_choice_parameter_names",
 ]

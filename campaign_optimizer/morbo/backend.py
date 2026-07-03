@@ -35,6 +35,10 @@ from .botorch_model import (
     BotorchRegionalConfig,
     suggest_botorch_regional_candidates,
 )
+from .categorical import (
+    CategoricalRegionalPolicy,
+    apply_categorical_regional_policy,
+)
 from .search_space import SearchSpaceCodec
 from .state import CandidateRegistry, OptimizerState
 
@@ -104,6 +108,7 @@ class MorboLikeBackend:
         state: OptimizerState | None = None,
         suggestion_mode: str = "regional_random",
         botorch_config: BotorchRegionalConfig | Mapping[str, Any] | None = None,
+        categorical_policy: CategoricalRegionalPolicy | Mapping[str, Any] | None = None,
     ):
         self.space_codec = SearchSpaceCodec(space)
         self.objective_spec = objective_spec
@@ -130,6 +135,12 @@ class MorboLikeBackend:
             self.botorch_config = botorch_config
         else:
             self.botorch_config = BotorchRegionalConfig.from_dict(botorch_config)
+        if isinstance(categorical_policy, CategoricalRegionalPolicy):
+            self.categorical_policy = categorical_policy
+        else:
+            self.categorical_policy = CategoricalRegionalPolicy.from_dict(
+                categorical_policy
+            )
         self.last_model_diagnostics: dict[str, Any] = {}
         self.state = state or OptimizerState(
             seed=self.seed,
@@ -410,6 +421,7 @@ class MorboLikeBackend:
             n=n,
             blocked_signatures=blocked_signatures,
             config=self.botorch_config,
+            categorical_policy=self.categorical_policy,
         )
 
         self.last_model_diagnostics = {
@@ -479,10 +491,15 @@ class MorboLikeBackend:
         for _attempt in range(max_attempts):
             if bounds is None:
                 params = self.space_codec.sample(self.rng)
+                params = self.space_codec.project_params(params)
             else:
                 params = self.space_codec.sample_within_bounds(bounds, self.rng)
-
-            params = self.space_codec.project_params(params)
+                params = apply_categorical_regional_policy(
+                    params,
+                    codec=self.space_codec,
+                    rng=self.rng,
+                    policy=self.categorical_policy,
+                )
             signature = self.space_codec.signature(params)
             if signature in blocked_signatures:
                 continue

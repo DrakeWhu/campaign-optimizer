@@ -84,6 +84,7 @@ class BotorchOptionalTests(unittest.TestCase):
             regional_policy=RegionalPolicy(max_regions=1, initial_radius=0.3),
             suggestion_mode="regional_model",
             botorch_config=BotorchRegionalConfig(enabled=False),
+            categorical_policy={"mode": "epsilon", "epsilon": 1.0},
         )
         backend.sync(
             [
@@ -100,6 +101,10 @@ class BotorchOptionalTests(unittest.TestCase):
             {proposal.strategy for proposal in proposals}, {"regional_random"}
         )
         self.assertEqual(backend.last_model_diagnostics["status"], "disabled")
+        self.assertTrue(
+            any(proposal.params["laser"] != "f32" for proposal in proposals)
+            or any(proposal.params["laser"] != "f20" for proposal in proposals)
+        )
 
 
 if __name__ == "__main__":

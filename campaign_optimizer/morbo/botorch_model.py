@@ -7,6 +7,10 @@ from typing import Any, Mapping, Sequence
 
 from .regions import ACTIVE, RegionRecord, region_bounds
 from .search_space import SearchSpaceCodec
+from .categorical import (
+    CategoricalRegionalPolicy,
+    apply_categorical_regional_policy,
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,7 @@ def suggest_botorch_regional_candidates(
     n: int,
     blocked_signatures: set[str],
     config: BotorchRegionalConfig,
+    categorical_policy: CategoricalRegionalPolicy | None = None,
 ) -> BotorchRegionalResult:
     """Fit a BoTorch qNEHVI/qLogNEHVI model and rank regional candidate pools.
 
@@ -147,6 +152,7 @@ def suggest_botorch_regional_candidates(
             n=n,
             blocked_signatures=set(blocked_signatures),
             config=config,
+            categorical_policy=categorical_policy or CategoricalRegionalPolicy(),
         )
     except Exception as exc:
         return BotorchRegionalResult(
@@ -219,6 +225,7 @@ def _suggest_with_botorch(
     n: int,
     blocked_signatures: set[str],
     config: BotorchRegionalConfig,
+    categorical_policy: CategoricalRegionalPolicy,
 ) -> BotorchRegionalResult:
     torch = imports["torch"]
 
@@ -261,6 +268,7 @@ def _suggest_with_botorch(
         rng=rng,
         blocked_signatures=blocked_signatures,
         pool_size_per_region=config.candidate_pool_size_per_region,
+        categorical_policy=categorical_policy,
     )
     if not pool:
         return BotorchRegionalResult(
@@ -334,6 +342,7 @@ def _suggest_with_botorch(
         y_transform=y_transform,
         diagnostics={
             "config": config.as_dict(),
+            "categorical_policy": categorical_policy.as_dict(),
             "acquisition_function": imports["acqf_name"],
             "train_rows": len(X_rows),
             "encoded_dim": len(X_rows[0]),
@@ -383,6 +392,7 @@ def _sample_regional_pool(
     rng: random.Random,
     blocked_signatures: set[str],
     pool_size_per_region: int,
+    categorical_policy: CategoricalRegionalPolicy,
 ) -> list[dict[str, Any]]:
     pool: list[dict[str, Any]] = []
     seen = set(blocked_signatures)
@@ -395,7 +405,13 @@ def _sample_regional_pool(
 
         while accepted < int(pool_size_per_region) and attempts < max_attempts:
             attempts += 1
-            params = codec.project_params(codec.sample_within_bounds(bounds, rng))
+            params = codec.sample_within_bounds(bounds, rng)
+            params = apply_categorical_regional_policy(
+                params,
+                codec=codec,
+                rng=rng,
+                policy=categorical_policy,
+            )
             signature = codec.signature(params)
             if signature in seen:
                 continue
