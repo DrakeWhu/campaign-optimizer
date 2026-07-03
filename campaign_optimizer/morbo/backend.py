@@ -31,6 +31,10 @@ from .regions import (
     restart_regions,
     update_regions,
 )
+from .botorch_model import (
+    BotorchRegionalConfig,
+    suggest_botorch_regional_candidates,
+)
 from .search_space import SearchSpaceCodec
 from .state import CandidateRegistry, OptimizerState
 
@@ -41,14 +45,18 @@ class CandidateProposal:
     candidate_signature: str
     region_id: str | None
     strategy: str
+    acquisition_value: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "params": dict(self.params),
             "candidate_signature": self.candidate_signature,
             "region_id": self.region_id,
             "strategy": self.strategy,
         }
+        if self.acquisition_value is not None:
+            out["acquisition_value"] = float(self.acquisition_value)
+        return out
 
 
 @dataclass(frozen=True)
@@ -94,6 +102,8 @@ class MorboLikeBackend:
         min_observations: int | None = None,
         regional_policy: RegionalPolicy | None = None,
         state: OptimizerState | None = None,
+        suggestion_mode: str = "regional_random",
+        botorch_config: BotorchRegionalConfig | Mapping[str, Any] | None = None,
     ):
         self.space_codec = SearchSpaceCodec(space)
         self.objective_spec = objective_spec
@@ -115,6 +125,12 @@ class MorboLikeBackend:
             raise ValueError("min_observations must be >= 1")
 
         self.regional_policy = regional_policy or RegionalPolicy()
+        self.suggestion_mode = str(suggestion_mode or "regional_random")
+        if isinstance(botorch_config, BotorchRegionalConfig):
+            self.botorch_config = botorch_config
+        else:
+            self.botorch_config = BotorchRegionalConfig.from_dict(botorch_config)
+        self.last_model_diagnostics: dict[str, Any] = {}
         self.state = state or OptimizerState(
             seed=self.seed,
             objective_spec=self.objective_spec.as_dict(),
@@ -307,6 +323,34 @@ class MorboLikeBackend:
             self.last_strategy = "global_random"
             return proposals
 
+        if self.suggestion_mode in {"regional_model", "botorch", "qlognehvi", "qnehvi"}:
+            model_proposals = self._sample_botorch_regional_model_proposals(
+                n=n,
+                active_regions=active_regions,
+                blocked_signatures=blocked,
+            )
+            if model_proposals:
+                batch_signatures = {
+                    proposal.candidate_signature for proposal in model_proposals
+                }
+                proposals = list(model_proposals)
+
+                if len(proposals) < n and self.botorch_config.fallback_to_random:
+                    fillers = self._sample_unique_random_proposals(
+                        n - len(proposals),
+                        strategy="regional_random",
+                        region_id=None,
+                        blocked_signatures=blocked | batch_signatures,
+                    )
+                    proposals.extend(fillers)
+
+                self.last_strategy = "regional_model"
+                return proposals
+
+            if not self.botorch_config.fallback_to_random:
+                self.last_strategy = "regional_model_failed"
+                return []
+
         proposals: list[CandidateProposal] = []
         batch_signatures: set[str] = set()
 
@@ -349,6 +393,55 @@ class MorboLikeBackend:
 
         registry = self.state.candidate_registry.mark_pending(signatures)
         self.state = self.state.with_updates(candidate_registry=registry)
+
+    def _sample_botorch_regional_model_proposals(
+        self,
+        n: int,
+        active_regions: Sequence[RegionRecord],
+        blocked_signatures: set[str],
+    ) -> list[CandidateProposal]:
+        result = suggest_botorch_regional_candidates(
+            encoded_X=self.training_data.encoded_X,
+            canonical_Y=self.training_data.canonical_Y,
+            objective_names=self.training_data.objective_names,
+            codec=self.space_codec,
+            active_regions=active_regions,
+            rng=self.rng,
+            n=n,
+            blocked_signatures=blocked_signatures,
+            config=self.botorch_config,
+        )
+
+        self.last_model_diagnostics = {
+            "status": result.status,
+            "reason": result.reason,
+            **dict(result.diagnostics or {}),
+        }
+
+        if result.ref_point_raw or result.ref_point_model_units or result.y_transform:
+            self.state = self.state.with_updates(
+                ref_point_raw=result.ref_point_raw or {},
+                ref_point_model_units=result.ref_point_model_units or {},
+                y_transform=result.y_transform or {},
+                extra={
+                    **dict(self.state.extra),
+                    "last_model_diagnostics": self.last_model_diagnostics,
+                },
+            )
+
+        if result.status != "ok":
+            return []
+
+        return [
+            CandidateProposal(
+                params=candidate.params,
+                candidate_signature=candidate.candidate_signature,
+                region_id=candidate.region_id,
+                strategy="regional_model",
+                acquisition_value=candidate.acquisition_value,
+            )
+            for candidate in result.candidates
+        ]
 
     def _sample_unique_random_proposals(
         self,

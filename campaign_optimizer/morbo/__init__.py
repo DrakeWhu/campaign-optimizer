@@ -72,6 +72,12 @@ from .proposals import (
     proposals_to_recommended_dataframe,
     write_recommended_candidates_tsv,
 )
+from .botorch_model import (
+    BotorchModelCandidate,
+    BotorchRegionalConfig,
+    BotorchRegionalResult,
+    suggest_botorch_regional_candidates,
+)
 
 __all__ = [
     "ACTIVE",
@@ -135,4 +141,8 @@ __all__ = [
     "DEFAULT_RECOMMENDATION_STATUS",
     "proposals_to_recommended_dataframe",
     "write_recommended_candidates_tsv",
+    "BotorchModelCandidate",
+    "BotorchRegionalConfig",
+    "BotorchRegionalResult",
+    "suggest_botorch_regional_candidates",
 ]

@@ -96,7 +96,11 @@ def proposals_to_recommended_dataframe(
             "recommendation_backend": backend_name,
             "surrogate_backend": backend_name,
             "ranking_source": ranking_source,
-            "acquisition_value": float(total - idx),
+            "acquisition_value": (
+                float(proposal.acquisition_value)
+                if getattr(proposal, "acquisition_value", None) is not None
+                else float(total - idx)
+            ),
             "candidate_signature": signature,
             "region_id": proposal.region_id or "",
             "morbo_strategy": proposal.strategy,

@@ -22,6 +22,7 @@ from campaign_optimizer.morbo import (
     save_optimizer_state as save_morbo_optimizer_state,
     save_region_records,
     write_recommended_candidates_tsv,
+    BotorchRegionalConfig,
 )
 
 from .parameters import DISTANCE_COLUMNS, scaled_parameter_array
@@ -276,6 +277,26 @@ def _take_diverse_top(
             break
 
     return pd.DataFrame(selected) if selected else ranked.head(n)
+
+
+def _morbo_suggestion_mode(rec_cfg: dict[str, Any]) -> str:
+    return str(
+        rec_cfg.get(
+            "suggestion_mode",
+            rec_cfg.get("morbo_suggestion_mode", "regional_random"),
+        )
+    )
+
+
+def _morbo_botorch_config(rec_cfg: dict[str, Any]) -> BotorchRegionalConfig:
+    payload = dict(rec_cfg.get("botorch", {}) or {})
+    suggestion_mode = _morbo_suggestion_mode(rec_cfg)
+
+    if suggestion_mode in {"regional_model", "botorch", "qlognehvi", "qnehvi"}:
+        payload["enabled"] = bool(payload.get("enabled", True))
+
+    payload.setdefault("seed", int(rec_cfg.get("seed", 12345)))
+    return BotorchRegionalConfig.from_dict(payload)
 
 
 def _recommendation_backend_name(rec_cfg: dict[str, Any]) -> str:
@@ -581,8 +602,9 @@ def _propose_morbo_like_recommendations(
         min_observations=rec_cfg.get("min_observations"),
         regional_policy=_morbo_regional_policy(rec_cfg),
         state=previous_state,
+        suggestion_mode=_morbo_suggestion_mode(rec_cfg),
+        botorch_config=_morbo_botorch_config(rec_cfg),
     )
-
     trials = _morbo_trials_from_history(history, objective_names=objective_names)
     sync_result = backend.sync(
         trials,
@@ -632,7 +654,11 @@ def _propose_morbo_like_recommendations(
         {
             "schema_version": 1,
             "backend": "morbo_like",
-            "surrogate_backend": "morbo_like_no_botorch",
+            "surrogate_backend": (
+                "morbo_like_botorch_qnehvi"
+                if backend.last_strategy == "regional_model"
+                else "morbo_like_no_botorch"
+            ),
             "status": "ok",
             "fit_rows": int(len(history)),
             "candidate_rows": int(len(proposals)),
@@ -644,6 +670,9 @@ def _propose_morbo_like_recommendations(
             "last_strategy": backend.last_strategy,
             "min_observations": backend.min_observations,
             "regional_policy": backend.regional_policy.as_dict(),
+            "suggestion_mode": backend.suggestion_mode,
+            "botorch_config": backend.botorch_config.as_dict(),
+            "model_diagnostics": backend.last_model_diagnostics,
             "note": (
                 "MORBO-like regional random backend; BoTorch model mode is not "
                 "enabled in this implementation."
