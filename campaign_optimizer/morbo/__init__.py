@@ -78,6 +78,11 @@ from .botorch_model import (
     BotorchRegionalResult,
     suggest_botorch_regional_candidates,
 )
+from .audit import (
+    audit_morbo_outputs,
+    render_morbo_audit_text,
+    write_morbo_audit_json,
+)
 
 __all__ = [
     "ACTIVE",
@@ -145,4 +150,7 @@ __all__ = [
     "BotorchRegionalConfig",
     "BotorchRegionalResult",
     "suggest_botorch_regional_candidates",
+    "audit_morbo_outputs",
+    "render_morbo_audit_text",
+    "write_morbo_audit_json",
 ]
