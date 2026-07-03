@@ -65,6 +65,13 @@ from .state import (
     save_region_records,
     write_json_atomic,
 )
+from .proposals import (
+    BASE_RECOMMENDED_COLUMNS,
+    DEFAULT_RANKING_SOURCE,
+    DEFAULT_RECOMMENDATION_STATUS,
+    proposals_to_recommended_dataframe,
+    write_recommended_candidates_tsv,
+)
 
 __all__ = [
     "ACTIVE",
@@ -123,4 +130,9 @@ __all__ = [
     "save_region_records",
     "update_regions",
     "write_json_atomic",
+    "BASE_RECOMMENDED_COLUMNS",
+    "DEFAULT_RANKING_SOURCE",
+    "DEFAULT_RECOMMENDATION_STATUS",
+    "proposals_to_recommended_dataframe",
+    "write_recommended_candidates_tsv",
 ]
