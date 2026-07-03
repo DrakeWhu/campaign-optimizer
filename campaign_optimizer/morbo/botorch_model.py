@@ -270,11 +270,21 @@ def _suggest_with_botorch(
         pool_size_per_region=config.candidate_pool_size_per_region,
         categorical_policy=categorical_policy,
     )
+    candidate_pool_categorical_counts = _categorical_pool_counts(
+        pool,
+        codec=codec,
+    )
+
     if not pool:
         return BotorchRegionalResult(
             status="no_candidate_pool",
             reason="No unique regional candidate pool could be sampled",
-            diagnostics={"config": config.as_dict()},
+            diagnostics={
+                "config": config.as_dict(),
+                "categorical_policy": categorical_policy.as_dict(),
+                "candidate_pool_categorical_counts": candidate_pool_categorical_counts,
+                "selected_categorical_counts": {},
+            },
             ref_point_raw=ref_raw,
             ref_point_model_units=ref_model,
             y_transform=y_transform,
@@ -333,6 +343,19 @@ def _suggest_with_botorch(
     status = "ok" if selected else "no_finite_acquisition_values"
     reason = None if selected else "No finite acquisition values were produced"
 
+    selected_rows = [
+        {
+            "params": candidate.params,
+            "candidate_signature": candidate.candidate_signature,
+            "region_id": candidate.region_id,
+        }
+        for candidate in selected
+    ]
+    selected_categorical_counts = _categorical_pool_counts(
+        selected_rows,
+        codec=codec,
+    )
+
     return BotorchRegionalResult(
         status=status,
         candidates=tuple(selected),
@@ -349,6 +372,8 @@ def _suggest_with_botorch(
             "objective_names": list(objective_names),
             "candidate_pool_rows": len(pool),
             "selected_rows": len(selected),
+            "candidate_pool_categorical_counts": candidate_pool_categorical_counts,
+            "selected_categorical_counts": selected_categorical_counts,
         },
     )
 
@@ -533,5 +558,49 @@ def _to_model_units(
         mean = float(means[name])
         std = float(stds[name])
         out[str(name)] = float((float(value) - mean) / std)
+
+    return out
+
+
+def _categorical_pool_counts(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    codec: SearchSpaceCodec,
+) -> dict[str, list[dict[str, Any]]]:
+    """Count categorical Choice values in a sampled/selected candidate pool."""
+
+    categorical_names: list[str] = []
+    for name, spec in codec.space.items():
+        if getattr(spec, "options", None) is not None:
+            categorical_names.append(str(name))
+
+    out: dict[str, list[dict[str, Any]]] = {}
+
+    for name in categorical_names:
+        counts: dict[str, int] = {}
+        total = 0
+
+        for row in rows:
+            params = row.get("params", {})
+            if not isinstance(params, Mapping):
+                continue
+            if name not in params:
+                continue
+
+            value = str(params[name])
+            counts[value] = counts.get(value, 0) + 1
+            total += 1
+
+        out[name] = [
+            {
+                "value": value,
+                "count": int(count),
+                "fraction": float(count / total) if total else 0.0,
+            }
+            for value, count in sorted(
+                counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
 
     return out

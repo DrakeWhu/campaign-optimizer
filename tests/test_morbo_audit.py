@@ -152,6 +152,17 @@ class MorboAuditTests(unittest.TestCase):
                 "candidate_pool_rows": 64,
                 "selected_rows": 2,
                 "objective_names": ["score_a", "score_b"],
+                "candidate_pool_categorical_counts": {
+                    "laser_case": [
+                        {"value": "f20", "count": 8, "fraction": 0.8},
+                        {"value": "f32", "count": 2, "fraction": 0.2},
+                    ]
+                },
+                "selected_categorical_counts": {
+                    "laser_case": [
+                        {"value": "f20", "count": 2, "fraction": 1.0},
+                    ]
+                },
             },
         }
         (self.out / "surrogate_summary.json").write_text(
@@ -182,6 +193,10 @@ class MorboAuditTests(unittest.TestCase):
             "All recommendations share laser_case=f20",
             "\n".join(summary["warnings"]),
         )
+        self.assertIn(
+            "Model pool explored multiple laser_case values",
+            "\n".join(summary["warnings"]),
+        )
 
     def test_write_json_and_render_text(self) -> None:
         path = write_morbo_audit_json(self.out, codec=self.codec)
@@ -194,6 +209,9 @@ class MorboAuditTests(unittest.TestCase):
         self.assertIn("surrogate_backend: morbo_like_botorch_qnehvi", text)
         self.assertIn("laser_case: f20=2", text)
         self.assertIn("Warnings", text)
+        self.assertIn("Model candidate pool", text)
+        self.assertIn("pool laser_case: f20=8, f32=2", text)
+        self.assertIn("selected laser_case: f20=2", text)
 
     def test_audit_handles_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

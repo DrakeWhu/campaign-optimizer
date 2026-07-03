@@ -123,6 +123,8 @@ def render_morbo_audit_text(summary: Mapping[str, Any]) -> str:
         f"last_strategy: {surrogate.get('last_strategy', '')}",
         f"suggestion_mode: {surrogate.get('suggestion_mode', '')}",
         f"model_status: {surrogate.get('model_status', '')}",
+        f"candidate_pool_rows: {surrogate.get('candidate_pool_rows', '')}",
+        f"selected_rows: {surrogate.get('selected_rows', '')}",
         "",
         "Recommendations",
         "---------------",
@@ -145,6 +147,15 @@ def render_morbo_audit_text(summary: Mapping[str, Any]) -> str:
             f"min={stats.get('min')} max={stats.get('max')} "
             f"mean={stats.get('mean')}"
         )
+
+    pool_counts = dict(surrogate.get("candidate_pool_categorical_counts", {}) or {})
+    selected_counts = dict(surrogate.get("selected_categorical_counts", {}) or {})
+    if pool_counts or selected_counts:
+        lines.extend(["", "Model candidate pool", "--------------------"])
+        for column, counts in pool_counts.items():
+            lines.append(f"pool {column}: {_format_counts(counts)}")
+        for column, counts in selected_counts.items():
+            lines.append(f"selected {column}: {_format_counts(counts)}")
 
     lines.extend(
         [
@@ -322,6 +333,14 @@ def _surrogate_subset(payload: Any) -> dict[str, Any]:
         "objective_names": diagnostics.get(
             "objective_names", payload.get("objective_names")
         ),
+        "candidate_pool_categorical_counts": diagnostics.get(
+            "candidate_pool_categorical_counts",
+            {},
+        ),
+        "selected_categorical_counts": diagnostics.get(
+            "selected_categorical_counts",
+            {},
+        ),
     }
 
 
@@ -386,6 +405,37 @@ def _audit_warnings(
             warnings.append(
                 f"All recommendations came from one region despite "
                 f"{regions.get('active_count')} active regions"
+            )
+
+    pool_counts_by_col = dict(
+        surrogate.get("candidate_pool_categorical_counts", {}) or {}
+    )
+    selected_counts_by_col = dict(
+        surrogate.get("selected_categorical_counts", {}) or {}
+    )
+
+    for column, selected_counts in selected_counts_by_col.items():
+        selected_non_empty = [
+            item
+            for item in selected_counts
+            if item.get("value") not in {"", "nan", "None"}
+        ]
+        pool_counts = pool_counts_by_col.get(column, [])
+        pool_non_empty = [
+            item for item in pool_counts if item.get("value") not in {"", "nan", "None"}
+        ]
+
+        if len(selected_non_empty) == 1 and len(pool_non_empty) > 1:
+            warnings.append(
+                f"Model pool explored multiple {column} values "
+                f"({_format_counts(pool_counts)}), but selected only "
+                f"{column}={selected_non_empty[0]['value']}"
+            )
+
+        if len(selected_non_empty) == 1 and len(pool_non_empty) == 1:
+            warnings.append(
+                f"Model pool itself is categorical-frozen for {column}: "
+                f"{_format_counts(pool_counts)}"
             )
 
     return warnings
