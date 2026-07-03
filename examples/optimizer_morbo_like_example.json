@@ -1,0 +1,18 @@
+{
+  "recommendation": {
+    "backend": "morbo_like",
+    "seed": 7,
+    "n_candidates": 10,
+    "min_observations": 4,
+    "regional_policy": {
+      "max_regions": 2,
+      "initial_radius": 0.25,
+      "min_radius": 0.05,
+      "max_radius": 0.5,
+      "expansion_factor": 1.2,
+      "contraction_factor": 0.7,
+      "restart_failure_threshold": 3,
+      "local_min_observations": 3
+    }
+  }
+}

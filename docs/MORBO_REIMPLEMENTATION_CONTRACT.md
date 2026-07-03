@@ -766,3 +766,21 @@ The correct long-term goal is:
 ```text
 Validate and, if justified, promote morbo_like -> morbo after comparison with the MORBO paper and official implementation.
 ```
+
+Current implementation status
+
+Implemented:
+- backend="morbo_like" selectable from the existing recommendation flow
+- no separate CLI
+- no BoTorch
+- global_random fallback
+- regional_random proposals
+- Pareto frontier
+- regions/state/observations
+- recommended_candidates.tsv compatible with capillary batch
+
+Not implemented yet:
+- regional_model
+- qLogNEHVI
+- corrected BoTorch reference-point scaling
+- validation against official MORBO
