@@ -8,6 +8,21 @@ import pandas as pd
 
 from campaign_optimizer.config import OptimizerConfig
 from campaign_optimizer.io import read_table, write_json, write_tsv
+from campaign_optimizer.morbo import (
+    Choice,
+    FloatRange,
+    MorboLikeBackend,
+    ObjectiveDefinition,
+    ObjectiveSpec,
+    OptimizerState,
+    RegionalPolicy,
+    TrialInput,
+    load_optimizer_state,
+    save_frontier_records,
+    save_optimizer_state as save_morbo_optimizer_state,
+    save_region_records,
+    write_recommended_candidates_tsv,
+)
 
 from .parameters import DISTANCE_COLUMNS, scaled_parameter_array
 from .parsing import f_number_from_laser_case
@@ -342,6 +357,303 @@ def _predict_candidates(
     raise ValueError(f"Unknown recommendation backend: {backend!r}")
 
 
+def _is_morbo_like_backend(rec_cfg: dict[str, Any]) -> bool:
+    return _recommendation_backend_name(rec_cfg) in {
+        "morbo_like",
+        "morbo-like",
+        "morbo_random",
+        "morbo_like_random",
+    }
+
+
+def _morbo_search_space(parameter_space: dict[str, Any]) -> dict[str, Any]:
+    ranges = parameter_space["ranges"]
+    return {
+        "laser_case": Choice(
+            list(parameter_space.get("laser_cases", ["f20", "f32", "f40"]))
+        ),
+        "n0_1e18cm3": FloatRange(*[float(v) for v in ranges["n0_1e18cm3"]]),
+        "plateau_mm_num": FloatRange(*[float(v) for v in ranges["plateau_mm_num"]]),
+        "diameter_um_num": FloatRange(*[float(v) for v in ranges["diameter_um_num"]]),
+        "focus_mm_num": FloatRange(*[float(v) for v in ranges["focus_mm_num"]]),
+    }
+
+
+def _morbo_required_parameter_columns() -> tuple[str, ...]:
+    return (
+        "laser_case",
+        "n0_1e18cm3",
+        "plateau_mm_num",
+        "diameter_um_num",
+        "focus_mm_num",
+    )
+
+
+def _morbo_objective_names(
+    *,
+    objective_config: dict[str, Any],
+    objective_table: pd.DataFrame,
+    rec_cfg: dict[str, Any],
+) -> tuple[str, ...]:
+    configured = rec_cfg.get("objective_names") or rec_cfg.get("objectives")
+    if configured:
+        names = tuple(str(item) for item in configured)
+    else:
+        names = tuple(
+            str(item) for item in objective_config.get("required_scores_for_fit", [])
+        )
+
+    if not names:
+        names = tuple(
+            score for score in PREDICTED_SCORES if score in objective_table.columns
+        )
+
+    missing = [name for name in names if name not in objective_table.columns]
+    if missing:
+        raise ValueError(
+            "MORBO-like backend objective(s) missing from objective_table.csv: "
+            + ", ".join(missing)
+        )
+
+    if not names:
+        raise ValueError("MORBO-like backend requires at least one objective")
+
+    return names
+
+
+def _morbo_objective_spec(objective_names: tuple[str, ...]) -> ObjectiveSpec:
+    return ObjectiveSpec(
+        tuple(
+            ObjectiveDefinition(name=name, metric=name, sense="max")
+            for name in objective_names
+        )
+    )
+
+
+def _morbo_trials_from_history(
+    history: pd.DataFrame,
+    *,
+    objective_names: tuple[str, ...],
+) -> list[TrialInput]:
+    required_params = _morbo_required_parameter_columns()
+    trials: list[TrialInput] = []
+
+    for _, row in history.sort_values("observation_id", kind="stable").iterrows():
+        params = {column: row[column] for column in required_params}
+        raw_metrics = {
+            objective_name: row[objective_name]
+            for objective_name in objective_names
+            if objective_name in row.index
+        }
+        metadata = {
+            "observation_id": str(row.get("observation_id", "")),
+            "source_case_id": str(row.get("source_case_id", "")),
+            "source_case_name": str(row.get("source_case_name", "")),
+        }
+        trials.append(
+            TrialInput(
+                candidate_id=str(row["observation_id"]),
+                params=params,
+                raw_metrics=raw_metrics,
+                simulation_status="finished",
+                metadata=metadata,
+            )
+        )
+
+    return trials
+
+
+def _morbo_regional_policy(rec_cfg: dict[str, Any]) -> RegionalPolicy:
+    payload = rec_cfg.get("regional_policy", {}) or {}
+    if not isinstance(payload, dict):
+        raise ValueError("recommendation.regional_policy must be an object")
+    return RegionalPolicy.from_dict(payload)
+
+
+def _load_morbo_state_for_iteration(
+    config: OptimizerConfig,
+    iteration: int,
+    outputs_dir: Path,
+) -> OptimizerState | None:
+    current = outputs_dir / "morbo_optimizer_state.json"
+    if current.is_file():
+        return load_optimizer_state(current)
+
+    for previous_iteration in range(iteration - 1, -1, -1):
+        previous = (
+            config.iteration_dir(previous_iteration)
+            / "outputs"
+            / "morbo_optimizer_state.json"
+        )
+        if previous.is_file():
+            return load_optimizer_state(previous)
+
+    return None
+
+
+def _proposal_region_map_from_state(
+    state: OptimizerState | None,
+    *,
+    backend: MorboLikeBackend,
+    trials: list[TrialInput],
+) -> dict[str, str]:
+    """Map observed trial IDs back to the region that proposed them.
+
+    Candidate IDs in recommended_candidates.tsv are not guaranteed to survive as
+    observation IDs after materialization/campaign execution, so attribution is
+    done by stable candidate signature instead of by candidate_id.
+    """
+
+    if state is None:
+        return {}
+
+    pending = (
+        state.extra.get("pending_proposals", [])
+        if isinstance(state.extra, dict)
+        else []
+    )
+    if not isinstance(pending, list):
+        return {}
+
+    region_by_signature: dict[str, str] = {}
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        signature = str(item.get("candidate_signature", "")).strip()
+        region_id = str(item.get("region_id", "")).strip()
+        if signature and region_id:
+            region_by_signature[signature] = region_id
+
+    out: dict[str, str] = {}
+    for trial in trials:
+        try:
+            signature = backend.space_codec.signature(trial.params)
+        except Exception:
+            continue
+        region_id = region_by_signature.get(signature)
+        if region_id:
+            out[trial.candidate_id] = region_id
+
+    return out
+
+
+def _morbo_pending_proposal_records(
+    proposals: list[Any],
+    *,
+    iteration: int,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for idx, proposal in enumerate(proposals):
+        records.append(
+            {
+                "candidate_id": f"morbo_{iteration:03d}_{idx:03d}",
+                "candidate_signature": proposal.candidate_signature,
+                "region_id": proposal.region_id,
+                "strategy": proposal.strategy,
+                "params": dict(proposal.params),
+            }
+        )
+    return records
+
+
+def _propose_morbo_like_recommendations(
+    *,
+    config: OptimizerConfig,
+    iteration: int,
+    outputs_dir: Path,
+    history: pd.DataFrame,
+    objective_table: pd.DataFrame,
+    parameter_space: dict[str, Any],
+    rec_cfg: dict[str, Any],
+) -> Path:
+    objective_names = _morbo_objective_names(
+        objective_config=config.objective_config(),
+        objective_table=objective_table,
+        rec_cfg=rec_cfg,
+    )
+    objective_spec = _morbo_objective_spec(objective_names)
+    previous_state = _load_morbo_state_for_iteration(config, iteration, outputs_dir)
+
+    backend = MorboLikeBackend(
+        _morbo_search_space(parameter_space),
+        objective_spec,
+        seed=int(rec_cfg.get("seed", 12345)),
+        min_observations=rec_cfg.get("min_observations"),
+        regional_policy=_morbo_regional_policy(rec_cfg),
+        state=previous_state,
+    )
+
+    trials = _morbo_trials_from_history(history, objective_names=objective_names)
+    sync_result = backend.sync(
+        trials,
+        proposal_region_map=_proposal_region_map_from_state(
+            previous_state,
+            backend=backend,
+            trials=trials,
+        ),
+    )
+
+    n = int(rec_cfg.get("n_candidates", 30))
+    proposals = backend.suggest_proposals(n)
+    backend.register_pending(proposals)
+
+    pending_records = _morbo_pending_proposal_records(proposals, iteration=iteration)
+    backend.state = backend.state.with_updates(
+        last_strategy=backend.last_strategy,
+        extra={
+            **dict(backend.state.extra),
+            "objective_names": list(objective_names),
+            "observed_count": sync_result.observed_count,
+            "skipped_count": sync_result.skipped_count,
+            "frontier_count": len(sync_result.frontier),
+            "region_count": len(sync_result.regions),
+            "pending_proposals": pending_records,
+        },
+    )
+
+    out_path = write_recommended_candidates_tsv(
+        outputs_dir / "recommended_candidates.tsv",
+        proposals,
+        iteration=iteration,
+        candidate_id_prefix=f"morbo_{iteration:03d}",
+        required_parameter_columns=_morbo_required_parameter_columns(),
+    )
+
+    save_morbo_optimizer_state(
+        outputs_dir / "morbo_optimizer_state.json", backend.state
+    )
+    save_frontier_records(
+        outputs_dir / "morbo_frontier.json", list(sync_result.frontier)
+    )
+    save_region_records(outputs_dir / "morbo_regions.json", list(sync_result.regions))
+
+    write_json(
+        outputs_dir / "surrogate_summary.json",
+        {
+            "schema_version": 1,
+            "backend": "morbo_like",
+            "surrogate_backend": "morbo_like_no_botorch",
+            "status": "ok",
+            "fit_rows": int(len(history)),
+            "candidate_rows": int(len(proposals)),
+            "objective_names": list(objective_names),
+            "observed_count": sync_result.observed_count,
+            "skipped_count": sync_result.skipped_count,
+            "frontier_count": len(sync_result.frontier),
+            "region_count": len(sync_result.regions),
+            "last_strategy": backend.last_strategy,
+            "min_observations": backend.min_observations,
+            "regional_policy": backend.regional_policy.as_dict(),
+            "note": (
+                "MORBO-like regional random backend; BoTorch model mode is not "
+                "enabled in this implementation."
+            ),
+        },
+    )
+
+    return out_path
+
+
 def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
     iter_dir = config.iteration_dir(iteration)
     outputs_dir = iter_dir / "outputs"
@@ -363,6 +675,17 @@ def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
 
     if history.empty:
         raise ValueError("No fit-eligible rows with finite parameter columns")
+
+    if _is_morbo_like_backend(rec_cfg):
+        return _propose_morbo_like_recommendations(
+            config=config,
+            iteration=iteration,
+            outputs_dir=outputs_dir,
+            history=history,
+            objective_table=obj,
+            parameter_space=parameter_space,
+            rec_cfg=rec_cfg,
+        )
 
     candidates = build_candidate_cloud(obs, obj, parameter_space, rec_cfg)
     candidates = _add_nearest_known_scaled_distance(
