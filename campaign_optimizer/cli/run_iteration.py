@@ -26,7 +26,7 @@ def _recommendation_backend(cfg: Any) -> str:
         except Exception:
             pass
 
-    return str(rec_cfg.get("backend", "passive_nearest_observed"))
+    return str(rec_cfg.get("backend", "morbo_like"))
 
 
 def main(argv: list[str] | None = None) -> int:

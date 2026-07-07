@@ -308,7 +308,7 @@ def _morbo_botorch_config(rec_cfg: dict[str, Any]) -> BotorchRegionalConfig:
 
 
 def _recommendation_backend_name(rec_cfg: dict[str, Any]) -> str:
-    return str(rec_cfg.get("backend", "passive_nearest_observed")).strip().lower()
+    return str(rec_cfg.get("backend", "morbo_like")).strip().lower()
 
 
 def _add_nearest_known_scaled_distance(
@@ -416,6 +416,32 @@ def _morbo_required_parameter_columns() -> tuple[str, ...]:
         "diameter_um_num",
         "focus_mm_num",
     )
+
+
+def _add_capillary_derived_candidate_columns(recommended: pd.DataFrame) -> pd.DataFrame:
+    """Add capillary-specific derived columns to recommendation tables.
+
+    MORBO-like uses laser_case as the categorical optimization variable.  The
+    legacy capillary recommendation contract also exposes f_number and n0_cm3
+    as derived/audit columns.  They must not be used as independent optimizer
+    variables.
+    """
+
+    out = recommended.copy()
+
+    if "laser_case" in out.columns:
+        out["f_number"] = out["laser_case"].map(f_number_from_laser_case)
+
+    if "n0_1e18cm3" in out.columns:
+        out["n0_cm3"] = (
+            pd.to_numeric(
+                out["n0_1e18cm3"],
+                errors="coerce",
+            )
+            * 1.0e18
+        )
+
+    return out
 
 
 def _morbo_objective_names(
@@ -649,6 +675,35 @@ def _propose_morbo_like_recommendations(
         candidate_id_prefix=f"morbo_{iteration:03d}",
         required_parameter_columns=_morbo_required_parameter_columns(),
     )
+
+    recommended = read_table(out_path, sep="\t")
+    recommended = _add_capillary_derived_candidate_columns(recommended)
+
+    first = [
+        "recommendation_id",
+        "optimizer_iteration",
+        "candidate_id",
+        "rank",
+        "recommendation_status",
+        "candidate_source",
+        "recommendation_backend",
+        "surrogate_backend",
+        "ranking_source",
+        "acquisition_value",
+        "candidate_signature",
+        "region_id",
+        "morbo_strategy",
+        "laser_case",
+        "f_number",
+        "n0_1e18cm3",
+        "n0_cm3",
+        "plateau_mm_num",
+        "diameter_um_num",
+        "focus_mm_num",
+    ]
+    cols = [column for column in first if column in recommended.columns]
+    cols += [column for column in recommended.columns if column not in cols]
+    out_path = write_tsv(out_path, recommended[cols])
 
     save_morbo_optimizer_state(
         outputs_dir / "morbo_optimizer_state.json", backend.state

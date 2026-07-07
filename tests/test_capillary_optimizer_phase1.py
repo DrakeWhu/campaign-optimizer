@@ -371,6 +371,96 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
         )
         self.assertAlmostEqual(float(obj_row["score_guiding_v1"]), 42.0)
 
+    def test_beam_v2_hard_gates_no_electron_cases_even_with_high_guiding(self) -> None:
+        cfg_path = self.optimizer_config_path
+        data = json.loads(cfg_path.read_text())
+        data["objective"] = {
+            "schema_version": 2,
+            "config_id": "test_capillary_objectives_guiding_longitudinal_transverse_v2",
+            "required_scores_for_fit": [
+                "score_guiding_v1",
+                "score_beam_longitudinal_v2",
+                "score_beam_transverse_v2",
+            ],
+            "derived_scores": [
+                "score_beam_longitudinal_v2",
+                "score_beam_transverse_v2",
+            ],
+            "beam_gated_v2": {
+                "min_charge_hot_pC": 100.0,
+                "min_n_macroparticles_hot": 200.0,
+                "min_n_macroparticles_transverse": 200.0,
+                "score_scale": 100.0,
+            },
+        }
+        cfg_path.write_text(json.dumps(data), encoding="utf-8")
+
+        cfg = load_optimizer_config(cfg_path)
+        build_observations(cfg, 0)
+
+        obs_path = cfg.iteration_dir(0) / "inputs" / "observations.csv"
+        obs = read_table(obs_path)
+
+        bad = obs["source_case_id"].astype(str) == "0"
+        good = obs["source_case_id"].astype(str) == "1"
+
+        obs.loc[bad, "metric_guiding_singlecase_score_v1"] = 90.0
+        obs.loc[bad, "metric_particle_beamlike_score"] = 0.0
+        obs.loc[bad, "metric_particle_beam_yield_score"] = 0.0
+        obs.loc[bad, "metric_particle_charge_hot_pC"] = 0.153
+        obs.loc[bad, "metric_particle_n_macroparticles_hot"] = 14.0
+        obs.loc[bad, "metric_particle_n_macroparticles_transverse"] = 1.0
+        obs.loc[bad, "metric_particle_E95_hot_MeV"] = 100.0
+        obs.loc[bad, "metric_particle_Emax_hot_MeV"] = 120.0
+        obs.loc[bad, "metric_particle_beam_transverse_quality_score"] = 1000.0
+
+        obs.loc[good, "metric_guiding_singlecase_score_v1"] = 70.0
+        obs.loc[good, "metric_particle_beamlike_score"] = 10.0
+        obs.loc[good, "metric_particle_beam_yield_score"] = 20.0
+        obs.loc[good, "metric_particle_charge_hot_pC"] = 140.0
+        obs.loc[good, "metric_particle_n_macroparticles_hot"] = 300.0
+        obs.loc[good, "metric_particle_n_macroparticles_transverse"] = 300.0
+        obs.loc[good, "metric_particle_E95_hot_MeV"] = 120.0
+        obs.loc[good, "metric_particle_Emax_hot_MeV"] = 150.0
+        obs.loc[good, "metric_particle_beam_transverse_quality_score"] = 200.0
+
+        obs.to_csv(obs_path, index=False)
+
+        obj = read_table(build_objectives(cfg, 0))
+        bad_row = obj[obj["observation_id"].str.contains("000_f20_chan")].iloc[0]
+        good_row = obj[obj["observation_id"].str.contains("001_f32_chan")].iloc[0]
+
+        self.assertEqual(bad_row["score_beam_longitudinal_v2_status"], "ok")
+        self.assertEqual(bad_row["score_beam_transverse_v2_status"], "ok")
+        self.assertAlmostEqual(float(bad_row["score_beam_longitudinal_v2"]), 0.0)
+        self.assertAlmostEqual(float(bad_row["score_beam_transverse_v2"]), 0.0)
+
+        self.assertGreater(
+            float(good_row["score_beam_longitudinal_v2"]),
+            float(bad_row["score_beam_longitudinal_v2"]),
+        )
+        self.assertGreater(
+            float(good_row["score_beam_transverse_v2"]),
+            float(bad_row["score_beam_transverse_v2"]),
+        )
+
+    def test_derived_scores_must_be_declared_as_derived_not_score_specs(self) -> None:
+        cfg_path = self.optimizer_config_path
+        data = json.loads(cfg_path.read_text())
+        data["objective"] = {
+            "required_scores_for_fit": ["score_beam_longitudinal_v2"],
+            "score_specs": {
+                "score_beam_longitudinal_v2": ["metric_particle_beam_yield_score"],
+            },
+        }
+        cfg_path.write_text(json.dumps(data), encoding="utf-8")
+
+        cfg = load_optimizer_config(cfg_path)
+        build_observations(cfg, 0)
+
+        with self.assertRaisesRegex(ValueError, "cannot override a derived score"):
+            build_objectives(cfg, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

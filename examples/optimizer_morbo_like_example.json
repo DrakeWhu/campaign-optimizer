@@ -1,18 +1,56 @@
 {
+  "objective": {
+    "schema_version": 2,
+    "config_id": "capillary_objectives_guiding_longitudinal_transverse_v2",
+    "required_scores_for_fit": [
+      "score_guiding_v1",
+      "score_beam_longitudinal_v2",
+      "score_beam_transverse_v2"
+    ],
+    "derived_scores": [
+      "score_beam_longitudinal_v2",
+      "score_beam_transverse_v2"
+    ],
+    "beam_gated_v2": {
+      "min_beamlike_score": 1e-12,
+      "min_beam_yield_score": 1e-12,
+      "min_charge_hot_pC": 100.0,
+      "min_n_macroparticles_hot": 200.0,
+      "min_n_macroparticles_transverse": 200.0,
+      "min_E95_hot_MeV": 50.0,
+      "score_scale": 100.0
+    }
+  },
   "recommendation": {
     "backend": "morbo_like",
+    "suggestion_mode": "regional_model",
+    "objective_names": [
+      "score_guiding_v1",
+      "score_beam_longitudinal_v2",
+      "score_beam_transverse_v2"
+    ],
     "seed": 7,
     "n_candidates": 10,
     "min_observations": 4,
-    "regional_policy": {
-      "max_regions": 2,
-      "initial_radius": 0.25,
-      "min_radius": 0.05,
-      "max_radius": 0.5,
-      "expansion_factor": 1.2,
+    "n_random": 2000,
+    "regional": {
+      "enabled": true,
+      "n_regions": 3,
+      "trust_region_fraction": 0.25,
       "contraction_factor": 0.7,
       "restart_failure_threshold": 3,
       "local_min_observations": 3
+    },
+    "botorch": {
+      "enabled": true,
+      "fallback_to_random": false,
+      "candidate_pool_size_per_region": 256,
+      "mc_samples": 64,
+      "fit_maxiter": 75
+    },
+    "categorical_policy": {
+      "mode": "epsilon",
+      "epsilon": 0.25
     }
   }
 }
