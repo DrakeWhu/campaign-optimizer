@@ -21,9 +21,7 @@ def main() -> None:
     obj = read_table(obj_path)
     fit = obj[obj["fit_eligible"].astype(str).str.lower() == "true"]
 
-    backend = str(
-        cfg.recommendation_config().get("backend", "passive_nearest_observed")
-    )
+    backend = str(cfg.recommendation_config().get("backend", "morbo_like"))
 
     summary_path = write_json(
         iter_dir / "outputs" / "surrogate_summary.json",

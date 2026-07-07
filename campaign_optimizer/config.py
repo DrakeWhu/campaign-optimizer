@@ -7,13 +7,32 @@ from typing import Any
 
 
 DEFAULT_OBJECTIVE_CONFIG = {
-    "schema_version": 1,
-    "config_id": "capillary_objectives_v1",
+    "schema_version": 2,
+    "config_id": "capillary_objectives_guiding_longitudinal_transverse_v2",
     "required_scores_for_fit": [
         "score_guiding_v1",
-        "score_beamlike_v1",
-        "score_transverse_v1",
+        "score_beam_longitudinal_v2",
+        "score_beam_transverse_v2",
     ],
+    "derived_scores": [
+        "score_beam_longitudinal_v2",
+        "score_beam_transverse_v2",
+    ],
+    "beam_gated_v2": {
+        "min_beamlike_score": 1.0e-12,
+        "min_beam_yield_score": 1.0e-12,
+        "min_charge_hot_pC": 100.0,
+        "min_n_macroparticles_hot": 200.0,
+        "min_n_macroparticles_transverse": 200.0,
+        "min_E95_hot_MeV": 50.0,
+        "charge_ref_pC": 1200.0,
+        "n_hot_ref": 1000.0,
+        "energy_ref_MeV": 220.0,
+        "mono_min": 0.30,
+        "mono_ref": 0.65,
+        "transverse_ref": 0.02,
+        "score_scale": 100.0,
+    },
 }
 
 DEFAULT_PARAMETER_SPACE = {
@@ -28,11 +47,35 @@ DEFAULT_PARAMETER_SPACE = {
 }
 
 DEFAULT_RECOMMENDATION = {
+    "backend": "morbo_like",
+    "suggestion_mode": "regional_random",
     "seed": 12345,
     "n_candidates": 30,
     "n_random": 2000,
     "min_known_scaled_dist": 0.035,
     "nearest_k": 8,
+    "min_observations": 8,
+    "regional_policy": {
+        "max_regions": 3,
+        "initial_radius": 0.25,
+        "min_radius": 0.05,
+        "max_radius": 0.5,
+        "expansion_factor": 1.2,
+        "contraction_factor": 0.7,
+        "restart_failure_threshold": 3,
+        "local_min_observations": 3,
+    },
+    "categorical_policy": {
+        "mode": "epsilon",
+        "epsilon": 0.25,
+    },
+    "botorch": {
+        "enabled": False,
+        "fallback_to_random": False,
+        "candidate_pool_size_per_region": 256,
+        "mc_samples": 64,
+        "fit_maxiter": 75,
+    },
 }
 
 DEFAULT_CANDIDATE_BATCH = {

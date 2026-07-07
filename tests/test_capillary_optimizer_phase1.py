@@ -68,8 +68,22 @@ def make_case(
         ).to_csv(case_dir / "guiding_singlecase_score.csv", index=False)
 
     row = {
-        "charge_hot_pC": 2.0,
-        "E95_hot_MeV": 100.0,
+        "n_macroparticles_total": 1000,
+        "n_macroparticles_valid": 1000,
+        "n_macroparticles_hot": 300,
+        "charge_hot_pC": 150.0,
+        "hot_energy_threshold_MeV": 10.0,
+        "Emax_MeV": 160.0,
+        "E95_MeV": 120.0,
+        "Emax_hot_MeV": 160.0,
+        "E95_hot_MeV": 120.0,
+        "eligible_beamlike": True,
+        "beamlike_status": "ok",
+        "beamlike_score": 10.0,
+        "beam_yield_score": 20.0,
+        "mono_proxy_E95_over_Emax": 0.75,
+        "n_macroparticles_transverse": 300,
+        "weight_transverse": 1.0,
     }
 
     if transverse is not None:
@@ -460,6 +474,35 @@ class TestCapillaryOptimizerPhase1(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cannot override a derived score"):
             build_objectives(cfg, 0)
+
+    def test_default_config_uses_morbo_like_and_beam_gated_v2(self) -> None:
+        cfg = load_optimizer_config(self.optimizer_config_path)
+
+        objective = cfg.objective_config()
+        recommendation = cfg.recommendation_config()
+
+        self.assertEqual(
+            objective["config_id"],
+            "capillary_objectives_guiding_longitudinal_transverse_v2",
+        )
+        self.assertEqual(
+            objective["required_scores_for_fit"],
+            [
+                "score_guiding_v1",
+                "score_beam_longitudinal_v2",
+                "score_beam_transverse_v2",
+            ],
+        )
+        self.assertEqual(
+            objective["derived_scores"],
+            [
+                "score_beam_longitudinal_v2",
+                "score_beam_transverse_v2",
+            ],
+        )
+        self.assertEqual(recommendation["backend"], "morbo_like")
+        self.assertEqual(recommendation["suggestion_mode"], "regional_random")
+        self.assertEqual(float(objective["beam_gated_v2"]["transverse_ref"]), 0.02)
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ DEFAULT_BEAM_GATED_V2_CONFIG = {
     "energy_ref_MeV": 220.0,
     "mono_min": 0.30,
     "mono_ref": 0.65,
-    "transverse_ref": 1000.0,
+    "transverse_ref": 0.02,
     "score_scale": 100.0,
 }
 
