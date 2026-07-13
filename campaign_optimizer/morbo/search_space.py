@@ -49,6 +49,31 @@ class IntRange:
 
 
 @dataclass(frozen=True)
+class PeriodicRange:
+    """Continuous periodic parameter encoded on the unit circle.
+
+    ``low`` is inclusive and ``high`` is the equivalent wrapped endpoint. A
+    periodic parameter contributes two encoded coordinates while remaining one
+    native optimization variable.
+    """
+
+    low: float
+    high: float
+
+    def __post_init__(self) -> None:
+        low = float(self.low)
+        high = float(self.high)
+        if not math.isfinite(low) or not math.isfinite(high):
+            raise ValueError("PeriodicRange bounds must be finite")
+        if high <= low:
+            raise ValueError("PeriodicRange high must be greater than low")
+
+    @property
+    def period(self) -> float:
+        return float(self.high) - float(self.low)
+
+
+@dataclass(frozen=True)
 class Choice:
     """Categorical parameter with a non-empty ordered set of options."""
 
@@ -121,6 +146,8 @@ class SearchSpaceCodec:
         for spec in self.space.values():
             if self._is_choice(spec):
                 dim += len(list(spec.options))
+            elif self._is_periodic_range(spec):
+                dim += 2
             else:
                 dim += 1
         return dim
@@ -135,6 +162,17 @@ class SearchSpaceCodec:
             if self._is_choice(spec):
                 options = list(spec.options)
                 encoded.extend(1.0 if value == option else 0.0 for option in options)
+                continue
+
+            if self._is_periodic_range(spec):
+                phase = (float(value) - float(spec.low)) / float(spec.period)
+                angle = 2.0 * math.pi * phase
+                encoded.extend(
+                    [
+                        0.5 + 0.5 * math.cos(angle),
+                        0.5 + 0.5 * math.sin(angle),
+                    ]
+                )
                 continue
 
             if self._is_int_range(spec):
@@ -177,6 +215,17 @@ class SearchSpaceCodec:
                 out[key] = options[best_idx]
                 continue
 
+            if self._is_periodic_range(spec):
+                x = 2.0 * min(max(values[idx], 0.0), 1.0) - 1.0
+                y = 2.0 * min(max(values[idx + 1], 0.0), 1.0) - 1.0
+                idx += 2
+                if abs(x) < 1.0e-15 and abs(y) < 1.0e-15:
+                    phase = 0.0
+                else:
+                    phase = (math.atan2(y, x) / (2.0 * math.pi)) % 1.0
+                out[key] = float(spec.low) + phase * float(spec.period)
+                continue
+
             raw = min(max(values[idx], 0.0), 1.0)
             idx += 1
 
@@ -204,6 +253,8 @@ class SearchSpaceCodec:
         for key, spec in self.space.items():
             if self._is_choice(spec):
                 params[key] = rng.choice(list(spec.options))
+            elif self._is_periodic_range(spec):
+                params[key] = rng.uniform(float(spec.low), float(spec.high))
             elif self._is_int_range(spec):
                 params[key] = rng.randint(int(spec.low), int(spec.high))
             elif self._is_float_range(spec):
@@ -269,6 +320,14 @@ class SearchSpaceCodec:
 
             return options[0]
 
+        if self._is_periodic_range(spec):
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise ValueError("PeriodicRange value must be finite")
+            return float(spec.low) + (
+                (numeric - float(spec.low)) % float(spec.period)
+            )
+
         if self._is_int_range(spec):
             low = int(spec.low)
             high = int(spec.high)
@@ -287,6 +346,19 @@ class SearchSpaceCodec:
             if not list(spec.options):
                 raise ValueError(
                     f"Choice parameter '{key}' must have at least one option"
+                )
+            return
+
+        if self._is_periodic_range(spec):
+            low = float(spec.low)
+            high = float(spec.high)
+            if not math.isfinite(low) or not math.isfinite(high):
+                raise ValueError(
+                    f"PeriodicRange parameter '{key}' bounds must be finite"
+                )
+            if high <= low:
+                raise ValueError(
+                    f"PeriodicRange parameter '{key}' has high <= low"
                 )
             return
 
@@ -319,6 +391,10 @@ class SearchSpaceCodec:
         return hasattr(spec, "options")
 
     @staticmethod
+    def _is_periodic_range(spec: Any) -> bool:
+        return isinstance(spec, PeriodicRange)
+
+    @staticmethod
     def _is_int_range(spec: Any) -> bool:
         return (
             hasattr(spec, "low")
@@ -332,4 +408,8 @@ class SearchSpaceCodec:
 
     @staticmethod
     def _is_float_range(spec: Any) -> bool:
-        return hasattr(spec, "low") and hasattr(spec, "high")
+        return (
+            hasattr(spec, "low")
+            and hasattr(spec, "high")
+            and not isinstance(spec, PeriodicRange)
+        )

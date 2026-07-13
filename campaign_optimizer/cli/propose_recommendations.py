@@ -5,7 +5,7 @@ import argparse
 from campaign_optimizer.config import load_optimizer_config
 from campaign_optimizer.recommend import propose_recommendations
 from campaign_optimizer.state import write_optimizer_state
-from campaign_optimizer.capillary.plotting import write_basic_plots
+from campaign_optimizer.problems import write_basic_plots
 
 
 def main() -> None:
@@ -18,7 +18,7 @@ def main() -> None:
     iter_dir = cfg.iteration_dir(args.iteration)
 
     path = propose_recommendations(cfg, args.iteration)
-    write_basic_plots(iter_dir)
+    write_basic_plots(cfg, iter_dir)
 
     write_optimizer_state(
         iter_dir=iter_dir,

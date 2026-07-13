@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,15 @@ class OptimizerConfig:
     base_dir: Path
     data: dict[str, Any]
 
+    def problem_kind(self) -> str:
+        raw = self.data.get("problem", "capillary")
+        if isinstance(raw, dict):
+            raw = raw.get("kind", "capillary")
+        kind = str(raw).strip().lower().replace("-", "_")
+        if kind not in {"capillary", "multichannel"}:
+            raise ValueError(f"unsupported optimizer problem kind: {kind!r}")
+        return kind
+
     @property
     def optimizer_run_root(self) -> Path:
         root = Path(str(self.data.get("optimizer_run_root", "optimizer_runs")))
@@ -126,7 +136,13 @@ class OptimizerConfig:
 
     def source_campaigns(self) -> list[dict[str, Any]]:
         value = self.data.get("source_campaigns")
-        if not isinstance(value, list) or not value:
+        if value is None and self.problem_kind() == "multichannel":
+            return []
+        if not isinstance(value, list):
+            raise ValueError(
+                "optimizer.json must define source_campaigns as a list"
+            )
+        if not value and self.problem_kind() != "multichannel":
             raise ValueError(
                 "optimizer.json must define a non-empty source_campaigns list"
             )
@@ -240,11 +256,28 @@ class OptimizerConfig:
         return merged
 
     def objective_config(self) -> dict[str, Any]:
+        if self.problem_kind() == "multichannel":
+            value = deepcopy(self.data.get("objective", {}) or {})
+            if not value:
+                raise ValueError(
+                    "multichannel optimizer.json must define objective"
+                )
+            return value
+
         value = dict(DEFAULT_OBJECTIVE_CONFIG)
         value.update(self.data.get("objective", {}) or {})
         return value
 
     def parameter_space(self) -> dict[str, Any]:
+        if self.problem_kind() == "multichannel":
+            value = deepcopy(self.data.get("parameter_space", {}) or {})
+            parameters = value.get("parameters")
+            if not isinstance(parameters, list) or not parameters:
+                raise ValueError(
+                    "multichannel parameter_space.parameters must be a non-empty list"
+                )
+            return value
+
         value = {
             "version": DEFAULT_PARAMETER_SPACE["version"],
             "laser_cases": list(DEFAULT_PARAMETER_SPACE["laser_cases"]),
@@ -264,6 +297,17 @@ class OptimizerConfig:
         return value
 
     def candidate_batch_config(self) -> dict[str, Any]:
+        if self.problem_kind() == "multichannel":
+            value = deepcopy(self.data.get("candidate_batch", {}) or {})
+            campaign_template = {
+                "campaign_json": "campaign.json",
+                "input_template": "input_template.py",
+            }
+            campaign_template.update(value.get("campaign_template", {}) or {})
+            value["campaign_template"] = campaign_template
+            value.setdefault("case_id_start", 0)
+            return value
+
         value = {
             "case_id_start": DEFAULT_CANDIDATE_BATCH["case_id_start"],
             "plasma_kind": DEFAULT_CANDIDATE_BATCH["plasma_kind"],

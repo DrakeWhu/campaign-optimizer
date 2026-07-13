@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 
-from campaign_optimizer.capillary.plotting import write_basic_plots
 from campaign_optimizer.config import load_optimizer_config
 from campaign_optimizer.io import read_table, write_json
+from campaign_optimizer.problems import write_basic_plots
 from campaign_optimizer.state import write_optimizer_state
 
 
@@ -38,7 +38,7 @@ def main() -> None:
         },
     )
 
-    write_basic_plots(iter_dir)
+    write_basic_plots(cfg, iter_dir)
 
     write_optimizer_state(
         iter_dir=iter_dir,

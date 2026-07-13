@@ -7,6 +7,7 @@ from campaign_optimizer.morbo.search_space import (
     Choice,
     FloatRange,
     IntRange,
+    PeriodicRange,
     SearchSpaceCodec,
 )
 
@@ -18,6 +19,46 @@ class TestMorboSearchSpaceCodec(unittest.TestCase):
             "ion.state": Choice([1, 2]),
         }
         self.codec = SearchSpaceCodec(self.space)
+
+    def test_periodic_range_wraps_and_roundtrips_on_unit_circle(self) -> None:
+        codec = SearchSpaceCodec(
+            {
+                "honeycomb_angle_deg": PeriodicRange(0.0, 60.0),
+                "polarization_angle_deg": PeriodicRange(0.0, 180.0),
+            }
+        )
+
+        self.assertEqual(codec.encoded_dim(), 4)
+        self.assertEqual(
+            codec.project_params(
+                {
+                    "honeycomb_angle_deg": 60.0,
+                    "polarization_angle_deg": 180.0,
+                }
+            ),
+            {
+                "honeycomb_angle_deg": 0.0,
+                "polarization_angle_deg": 0.0,
+            },
+        )
+
+        decoded = codec.decode(
+            codec.encode(
+                {
+                    "honeycomb_angle_deg": 15.0,
+                    "polarization_angle_deg": 135.0,
+                }
+            )
+        )
+        self.assertAlmostEqual(decoded["honeycomb_angle_deg"], 15.0)
+        self.assertAlmostEqual(decoded["polarization_angle_deg"], 135.0)
+
+    def test_periodic_endpoint_has_same_signature_as_origin(self) -> None:
+        codec = SearchSpaceCodec({"angle": PeriodicRange(0.0, 60.0)})
+        self.assertEqual(
+            codec.signature({"angle": 0.0}),
+            codec.signature({"angle": 60.0}),
+        )
 
     def test_categorical_codec_projection_and_roundtrip_are_deterministic(self) -> None:
         encoded = self.codec.encode({"geom.n0": 3.0, "ion.state": 2})

@@ -122,7 +122,7 @@ class RunIterationBuildCandidateBatchFlagTests(unittest.TestCase):
         read_table.assert_called_once_with(objectives)
         write_json.assert_called_once()
         propose_recommendations.assert_called_once_with(self.cfg, 1)
-        write_basic_plots.assert_called_once_with(iter_dir)
+        write_basic_plots.assert_called_once_with(self.cfg, iter_dir)
         write_optimizer_state.assert_called_once()
         build_candidate_batch.assert_called_once_with(self.cfg, 1)
 

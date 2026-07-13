@@ -3,13 +3,12 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from campaign_optimizer.capillary.batch import build_candidate_batch
-from campaign_optimizer.capillary.plotting import write_basic_plots
 from campaign_optimizer.config import load_optimizer_config
 from campaign_optimizer.io import read_table, write_json
 from campaign_optimizer.objectives import build_objectives
 from campaign_optimizer.observations import build_observations
 from campaign_optimizer.recommend import propose_recommendations
+from campaign_optimizer.problems import build_candidate_batch, write_basic_plots
 from campaign_optimizer.reporting import build_report
 from campaign_optimizer.state import write_optimizer_state
 
@@ -79,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     recommendations = propose_recommendations(cfg, args.iteration)
-    write_basic_plots(iter_dir)
+    write_basic_plots(cfg, iter_dir)
 
     report_paths = None
     if args.build_report:

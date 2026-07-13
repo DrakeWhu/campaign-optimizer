@@ -49,7 +49,7 @@ from .regions import (
     restart_regions,
     update_regions,
 )
-from .search_space import Choice, FloatRange, IntRange, SearchSpaceCodec
+from .search_space import Choice, FloatRange, IntRange, PeriodicRange, SearchSpaceCodec
 from .state import (
     BACKEND_NAME,
     SCHEMA_VERSION,
@@ -101,6 +101,7 @@ __all__ = [
     "FrontierRecord",
     "INACTIVE",
     "IntRange",
+    "PeriodicRange",
     "MorboLikeBackend",
     "ObservationBuildResult",
     "ObjectiveDefinition",

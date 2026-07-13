@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from campaign_optimizer.capillary.batch import build_candidate_batch
 from campaign_optimizer.config import load_optimizer_config
+from campaign_optimizer.problems import build_candidate_batch
 
 
 def main() -> None:
