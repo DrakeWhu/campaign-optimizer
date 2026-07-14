@@ -131,6 +131,45 @@ class MultichannelOptimizerTests(unittest.TestCase):
             ["0", "1"],
         )
 
+
+    def test_candidate_batch_can_enable_fields_for_all_cases(self) -> None:
+        payload = json.loads(
+            self.config_path.read_text(encoding="utf-8")
+        )
+        payload["candidate_batch"]["write_fields_for_all"] = True
+        self.config_path.write_text(
+            json.dumps(payload),
+            encoding="utf-8",
+        )
+
+        rc = run_iteration_main(
+            [
+                "--config",
+                str(self.config_path),
+                "--iteration",
+                "0",
+                "--build-candidate-batch",
+            ]
+        )
+        self.assertEqual(rc, 0)
+
+        path = (
+            self.root
+            / "optimizer_runs"
+            / "iter_000"
+            / "outputs"
+            / "candidate_batch.tsv"
+        )
+        candidate_batch = pd.read_csv(path, sep="\t")
+
+        self.assertEqual(len(candidate_batch), 9)
+        self.assertTrue(
+            (
+                candidate_batch["WRITE_FIELD_DIAGNOSTIC"]
+                == 1
+            ).all()
+        )
+
     def test_design_continues_then_switches_to_four_morbo_candidates(self) -> None:
         for iteration in (0, 1):
             rc = run_iteration_main(

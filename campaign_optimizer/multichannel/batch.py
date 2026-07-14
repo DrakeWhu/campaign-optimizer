@@ -122,8 +122,11 @@ def recommended_candidates_to_candidate_batch(
             {
                 "WRITE_FIELD_DIAGNOSTIC": (
                     1
-                    if bool(batch_cfg.get("write_fields_for_reference", True))
-                    and source == "reference"
+                    if bool(batch_cfg.get("write_fields_for_all", False))
+                    or (
+                        bool(batch_cfg.get("write_fields_for_reference", True))
+                        and source == "reference"
+                    )
                     else 0
                 ),
                 "OPT_ITERATION": int(iteration),
