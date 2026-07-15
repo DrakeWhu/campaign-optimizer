@@ -9,13 +9,12 @@ import pandas as pd
 from campaign_optimizer.config import OptimizerConfig
 from campaign_optimizer.io import read_table, write_json, write_tsv
 from campaign_optimizer.morbo import (
-    Choice,
-    FloatRange,
     MorboLikeBackend,
     ObjectiveDefinition,
     ObjectiveSpec,
     OptimizerState,
     RegionalPolicy,
+    SearchSpaceCodec,
     TrialInput,
     load_optimizer_state,
     save_frontier_records,
@@ -26,7 +25,14 @@ from campaign_optimizer.morbo import (
     CategoricalRegionalPolicy,
 )
 
-from .parameters import DISTANCE_COLUMNS, scaled_parameter_array
+from .parameters import (
+    DISTANCE_COLUMNS,
+    active_optimizer_parameter_columns,
+    capillary_reference_parameters,
+    capillary_search_space,
+    capillary_sobol_parameters,
+    scaled_parameter_array,
+)
 from .parsing import f_number_from_laser_case
 from .ax_backend import predict_with_ax_model_manager
 
@@ -86,6 +92,14 @@ def build_candidate_cloud(
             "focus_mm_num": _sample_uniform(rng, ranges["focus_mm_num"], n_random),
         }
     )
+    if "nitrogen_fraction" in ranges:
+        random["nitrogen_fraction"] = _sample_uniform(
+            rng, ranges["nitrogen_fraction"], n_random
+        )
+    if "pulse_duration_factor" in ranges:
+        random["pulse_duration_factor"] = _sample_uniform(
+            rng, ranges["pulse_duration_factor"], n_random
+        )
     random["candidate_source"] = "global_random_discrete_laser"
 
     fit = objectives[
@@ -112,7 +126,7 @@ def build_candidate_cloud(
 
     if anchors:
         anchor_df = pd.concat(anchors, ignore_index=True).drop_duplicates(
-            subset=DISTANCE_COLUMNS
+            subset=active_optimizer_parameter_columns(parameter_space)
         )
     else:
         anchor_df = joined.head(0)
@@ -124,6 +138,10 @@ def build_candidate_cloud(
         "diameter_um_num": 45.0,
         "focus_mm_num": 1.2,
     }
+    if "nitrogen_fraction" in ranges:
+        sigmas["nitrogen_fraction"] = 0.001
+    if "pulse_duration_factor" in ranges:
+        sigmas["pulse_duration_factor"] = 0.08
 
     for _, row in anchor_df.iterrows():
         for _ in range(100):
@@ -148,13 +166,7 @@ def build_candidate_cloud(
     candidates["focus_offset_from_plateau_start_mm"] = candidates["focus_mm_num"]
 
     candidates = candidates.drop_duplicates(
-        subset=[
-            "laser_case",
-            "n0_1e18cm3",
-            "plateau_mm_num",
-            "diameter_um_num",
-            "focus_mm_num",
-        ]
+        subset=active_optimizer_parameter_columns(parameter_space)
     ).reset_index(drop=True)
 
     return candidates
@@ -396,26 +408,13 @@ def _is_morbo_like_backend(rec_cfg: dict[str, Any]) -> bool:
 
 
 def _morbo_search_space(parameter_space: dict[str, Any]) -> dict[str, Any]:
-    ranges = parameter_space["ranges"]
-    return {
-        "laser_case": Choice(
-            list(parameter_space.get("laser_cases", ["f20", "f32", "f40"]))
-        ),
-        "n0_1e18cm3": FloatRange(*[float(v) for v in ranges["n0_1e18cm3"]]),
-        "plateau_mm_num": FloatRange(*[float(v) for v in ranges["plateau_mm_num"]]),
-        "diameter_um_num": FloatRange(*[float(v) for v in ranges["diameter_um_num"]]),
-        "focus_mm_num": FloatRange(*[float(v) for v in ranges["focus_mm_num"]]),
-    }
+    return capillary_search_space(parameter_space)
 
 
-def _morbo_required_parameter_columns() -> tuple[str, ...]:
-    return (
-        "laser_case",
-        "n0_1e18cm3",
-        "plateau_mm_num",
-        "diameter_um_num",
-        "focus_mm_num",
-    )
+def _morbo_required_parameter_columns(
+    parameter_space: dict[str, Any],
+) -> tuple[str, ...]:
+    return tuple(active_optimizer_parameter_columns(parameter_space))
 
 
 def _add_capillary_derived_candidate_columns(recommended: pd.DataFrame) -> pd.DataFrame:
@@ -489,8 +488,9 @@ def _morbo_trials_from_history(
     history: pd.DataFrame,
     *,
     objective_names: tuple[str, ...],
+    parameter_space: dict[str, Any],
 ) -> list[TrialInput]:
-    required_params = _morbo_required_parameter_columns()
+    required_params = _morbo_required_parameter_columns(parameter_space)
     trials: list[TrialInput] = []
 
     for _, row in history.sort_values("observation_id", kind="stable").iterrows():
@@ -640,7 +640,11 @@ def _propose_morbo_like_recommendations(
         botorch_config=_morbo_botorch_config(rec_cfg),
         categorical_policy=_morbo_categorical_policy(rec_cfg),
     )
-    trials = _morbo_trials_from_history(history, objective_names=objective_names)
+    trials = _morbo_trials_from_history(
+        history,
+        objective_names=objective_names,
+        parameter_space=parameter_space,
+    )
     sync_result = backend.sync(
         trials,
         proposal_region_map=_proposal_region_map_from_state(
@@ -673,11 +677,14 @@ def _propose_morbo_like_recommendations(
         proposals,
         iteration=iteration,
         candidate_id_prefix=f"morbo_{iteration:03d}",
-        required_parameter_columns=_morbo_required_parameter_columns(),
+        required_parameter_columns=_morbo_required_parameter_columns(parameter_space),
     )
 
     recommended = read_table(out_path, sep="\t")
     recommended = _add_capillary_derived_candidate_columns(recommended)
+    if _is_sobol_then_morbo_backend(rec_cfg):
+        recommended["candidate_source"] = "morbo"
+        recommended["recommendation_backend"] = "sobol_then_morbo"
 
     first = [
         "recommendation_id",
@@ -700,6 +707,7 @@ def _propose_morbo_like_recommendations(
         "plateau_mm_num",
         "diameter_um_num",
         "focus_mm_num",
+        "nitrogen_fraction",
     ]
     cols = [column for column in first if column in recommended.columns]
     cols += [column for column in recommended.columns if column not in cols]
@@ -717,7 +725,11 @@ def _propose_morbo_like_recommendations(
         outputs_dir / "surrogate_summary.json",
         {
             "schema_version": 1,
-            "backend": "morbo_like",
+            "backend": (
+                "sobol_then_morbo"
+                if _is_sobol_then_morbo_backend(rec_cfg)
+                else "morbo_like"
+            ),
             "surrogate_backend": (
                 "morbo_like_botorch_qnehvi"
                 if backend.last_strategy == "regional_model"
@@ -748,6 +760,247 @@ def _propose_morbo_like_recommendations(
     return out_path
 
 
+def _is_sobol_then_morbo_backend(rec_cfg: dict[str, Any]) -> bool:
+    return _recommendation_backend_name(rec_cfg) in {
+        "sobol_then_morbo",
+        "sobol-to-morbo",
+        "sobol_to_morbo",
+    }
+
+
+def _fit_history(
+    observations: pd.DataFrame,
+    objectives: pd.DataFrame,
+    *,
+    parameter_space: dict[str, Any],
+) -> pd.DataFrame:
+    if observations.empty or objectives.empty or "fit_eligible" not in objectives:
+        return observations.head(0).copy()
+    fit = objectives[
+        objectives["fit_eligible"].astype(str).str.lower() == "true"
+    ].copy()
+    if fit.empty:
+        return observations.head(0).copy()
+    history = observations.merge(fit, on="observation_id", how="inner")
+    required = active_optimizer_parameter_columns(parameter_space)
+    return history.dropna(subset=required).reset_index(drop=True)
+
+
+def _used_sobol_indices(observations: pd.DataFrame) -> list[int]:
+    if "sobol_index" not in observations.columns:
+        return []
+    values = pd.to_numeric(observations["sobol_index"], errors="coerce")
+    return sorted({int(value) for value in values.dropna() if value >= 0})
+
+
+def _initial_recommendation_row(
+    *,
+    iteration: int,
+    rank: int,
+    candidate_id: str,
+    source: str,
+    signature: str,
+    params: dict[str, Any],
+    sobol_index: int | str = "",
+    reference_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "recommendation_id": f"iter_{iteration:03d}_rank_{rank:03d}",
+        "optimizer_iteration": int(iteration),
+        "candidate_id": candidate_id,
+        "rank": int(rank),
+        "recommendation_status": "proposed",
+        "candidate_source": source,
+        "recommendation_backend": "sobol_then_morbo",
+        "surrogate_backend": "none_sobol_design",
+        "ranking_source": source,
+        "acquisition_value": "",
+        "candidate_signature": signature,
+        "region_id": "",
+        "morbo_strategy": "",
+        "sobol_index": sobol_index,
+        "reference_id": reference_id,
+        **params,
+    }
+
+
+def _write_capillary_sobol_recommendations(
+    *,
+    config: OptimizerConfig,
+    iteration: int,
+    outputs_dir: Path,
+    observations: pd.DataFrame,
+    eligible_count: int,
+    minimum_observations: int,
+) -> Path:
+    parameter_space = config.parameter_space()
+    rec_cfg = config.recommendation_config()
+    design = dict(rec_cfg.get("initial_design", {}) or {})
+    seed = int(design.get("seed", rec_cfg.get("seed", 12345)))
+    target = int(design.get("sobol_points", 64))
+    initial_batch_size = int(design.get("initial_batch_size", 32))
+    continuation_size = int(
+        design.get("continuation_batch_size", rec_cfg.get("n_candidates", 6))
+    )
+    include_references = bool(design.get("include_references", True))
+    if target <= 0 or initial_batch_size <= 0 or continuation_size <= 0:
+        raise ValueError("Sobol point and batch counts must be positive")
+
+    used = _used_sobol_indices(observations)
+    next_index = max(used) + 1 if used else 0
+    remaining = max(target - len(used), 0)
+    if remaining:
+        batch_size = initial_batch_size if not used else continuation_size
+        count = min(batch_size, remaining)
+        phase = "balanced_sobol"
+    else:
+        count = continuation_size
+        phase = "sobol_until_model_ready"
+
+    codec = SearchSpaceCodec(capillary_search_space(parameter_space))
+    known_signatures: set[str] = set()
+    names = active_optimizer_parameter_columns(parameter_space)
+    for _, row in observations.iterrows():
+        try:
+            known_signatures.add(codec.signature({name: row[name] for name in names}))
+        except Exception:
+            continue
+
+    rows: list[dict[str, Any]] = []
+    rank = 1
+    if iteration == 0 and include_references:
+        for reference_index, (reference_id, params) in enumerate(
+            capillary_reference_parameters(parameter_space)
+        ):
+            signature = codec.signature(params)
+            if signature in known_signatures:
+                continue
+            rows.append(
+                _initial_recommendation_row(
+                    iteration=iteration,
+                    rank=rank,
+                    candidate_id=f"cap_{iteration:03d}_reference_{reference_index:03d}",
+                    source="reference",
+                    signature=signature,
+                    params=params,
+                    reference_id=reference_id,
+                )
+            )
+            known_signatures.add(signature)
+            rank += 1
+
+    accepted = 0
+    candidate_index = next_index
+    while accepted < count:
+        params = capillary_sobol_parameters(
+            parameter_space,
+            start_index=candidate_index,
+            count=1,
+            seed=seed,
+        )[0]
+        signature = codec.signature(params)
+        if signature not in known_signatures:
+            rows.append(
+                _initial_recommendation_row(
+                    iteration=iteration,
+                    rank=rank,
+                    candidate_id=f"cap_{iteration:03d}_sobol_{candidate_index:06d}",
+                    source="sobol",
+                    signature=signature,
+                    params=params,
+                    sobol_index=candidate_index,
+                )
+            )
+            known_signatures.add(signature)
+            accepted += 1
+            rank += 1
+        candidate_index += 1
+
+    recommended = _add_capillary_derived_candidate_columns(pd.DataFrame(rows))
+    path = write_tsv(outputs_dir / "recommended_candidates.tsv", recommended)
+    write_json(
+        outputs_dir / "surrogate_summary.json",
+        {
+            "schema_version": 1,
+            "problem_kind": "capillary",
+            "backend": "sobol_then_morbo",
+            "status": "initial_design",
+            "phase": phase,
+            "seed": seed,
+            "sobol_target": target,
+            "sobol_indices_already_used": used,
+            "sobol_indices_proposed": [
+                int(row["sobol_index"])
+                for row in rows
+                if row["candidate_source"] == "sobol"
+            ],
+            "reference_ids_proposed": [
+                row["reference_id"]
+                for row in rows
+                if row["candidate_source"] == "reference"
+            ],
+            "eligible_observations": int(eligible_count),
+            "minimum_observations": int(minimum_observations),
+            "candidate_rows": len(rows),
+        },
+    )
+    return path
+
+
+def _propose_sobol_then_morbo(
+    *,
+    config: OptimizerConfig,
+    iteration: int,
+    outputs_dir: Path,
+    observations: pd.DataFrame,
+    objectives: pd.DataFrame,
+    parameter_space: dict[str, Any],
+    rec_cfg: dict[str, Any],
+) -> Path:
+    history = _fit_history(
+        observations,
+        objectives,
+        parameter_space=parameter_space,
+    )
+    objective_names = tuple(
+        str(name)
+        for name in (
+            rec_cfg.get("objective_names")
+            or config.objective_config().get("required_scores_for_fit", [])
+        )
+    )
+    encoded_dimensions = SearchSpaceCodec(
+        capillary_search_space(parameter_space)
+    ).encoded_dim()
+    minimum_observations = int(
+        rec_cfg.get("min_observations")
+        or max(4, len(objective_names) + 1, encoded_dimensions + 1)
+    )
+    design = dict(rec_cfg.get("initial_design", {}) or {})
+    target = int(design.get("sobol_points", 64))
+    used = _used_sobol_indices(observations)
+
+    if len(used) < target or len(history) < minimum_observations:
+        return _write_capillary_sobol_recommendations(
+            config=config,
+            iteration=iteration,
+            outputs_dir=outputs_dir,
+            observations=observations,
+            eligible_count=len(history),
+            minimum_observations=minimum_observations,
+        )
+
+    return _propose_morbo_like_recommendations(
+        config=config,
+        iteration=iteration,
+        outputs_dir=outputs_dir,
+        history=history,
+        objective_table=objectives,
+        parameter_space=parameter_space,
+        rec_cfg=rec_cfg,
+    )
+
+
 def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
     iter_dir = config.iteration_dir(iteration)
     outputs_dir = iter_dir / "outputs"
@@ -759,13 +1012,25 @@ def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
     parameter_space = config.parameter_space()
     rec_cfg = config.recommendation_config()
 
+    if _is_sobol_then_morbo_backend(rec_cfg):
+        return _propose_sobol_then_morbo(
+            config=config,
+            iteration=iteration,
+            outputs_dir=outputs_dir,
+            observations=obs,
+            objectives=obj,
+            parameter_space=parameter_space,
+            rec_cfg=rec_cfg,
+        )
+
     fit = obj[obj["fit_eligible"].astype(str).str.lower() == "true"].copy()
 
     if fit.empty:
         raise ValueError("No fit-eligible objective rows available for recommendations")
 
     history = obs.merge(fit, on="observation_id", how="inner")
-    history = history.dropna(subset=DISTANCE_COLUMNS).reset_index(drop=True)
+    required_parameters = active_optimizer_parameter_columns(parameter_space)
+    history = history.dropna(subset=required_parameters).reset_index(drop=True)
 
     if history.empty:
         raise ValueError("No fit-eligible rows with finite parameter columns")

@@ -168,6 +168,38 @@ def _read_guiding_metrics_row(
     return out, "ok", ""
 
 
+def _read_soft50_curve_row(
+    path: Path,
+    *,
+    energy_low_mev: float,
+) -> tuple[dict[str, Any], str, str]:
+    """Select the persisted all-electron row for the configured soft threshold."""
+
+    if not path.is_file():
+        return {}, "missing_reduced_output", f"missing file: {path}"
+    try:
+        frame = read_table(path)
+    except Exception as exc:
+        return {}, "analysis_failed", f"csv read failed: {exc}"
+    required = {"soft50_energy_low_MeV", "species_scope"}
+    if frame.empty or not required.issubset(frame.columns):
+        return {}, "missing_metric", f"invalid soft50 curve: {path}"
+
+    energy = pd.to_numeric(frame["soft50_energy_low_MeV"], errors="coerce")
+    scopes = frame["species_scope"].astype(str).str.lower()
+    selected = frame.loc[
+        np.isclose(energy, float(energy_low_mev), rtol=0.0, atol=1.0e-9)
+        & scopes.eq("all_electrons")
+    ]
+    if selected.empty:
+        return (
+            {},
+            "missing_metric",
+            f"no all_electrons soft50 row for E_low={energy_low_mev:g} MeV",
+        )
+    return dict(selected.iloc[-1]), "ok", ""
+
+
 def _add_global_metrics(
     base: pd.DataFrame,
     joint: pd.DataFrame | None,
@@ -341,6 +373,9 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 "acceptance_curves_status": "not_applicable"
                 if params.get("plasma_kind") == "vac"
                 else "not_checked",
+                "soft50_curves_status": "not_applicable"
+                if params.get("plasma_kind") == "vac"
+                else "not_checked",
                 "comparison_metrics_status": "not_checked",
                 **params,
             }
@@ -361,6 +396,22 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 if reason and not row["failure_reason"]:
                     row["failure_reason"] = reason
                 row.update(_metric_from_first_row("particle", particle_metrics))
+
+            if (
+                reduced_outputs.get("soft50_curves")
+                and params.get("plasma_kind") != "vac"
+            ):
+                soft50_cfg = config.objective_config().get("soft50_v1", {}) or {}
+                energy_low = float(soft50_cfg.get("energy_low_MeV", 10.0))
+                curve_metrics, status, _reason = _read_soft50_curve_row(
+                    cdir / reduced_outputs["soft50_curves"],
+                    energy_low_mev=energy_low,
+                )
+                row["soft50_curves_status"] = status
+                if status == "ok":
+                    row.update(
+                        _metric_from_reduced_output_row("particle", curve_metrics)
+                    )
 
             if reduced_outputs.get("guiding_metrics"):
                 guiding_metrics, status, reason = _read_guiding_metrics_row(
@@ -417,8 +468,6 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
 
         all_rows.extend(base.to_dict(orient="records"))
 
-    observations = pd.DataFrame(all_rows)
-
     first_cols = [
         "observation_id",
         "source_campaign_name",
@@ -434,6 +483,10 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
         "failure_reason",
         *PARAMETER_COLUMNS,
     ]
+
+    observations = pd.DataFrame(all_rows)
+    if observations.empty:
+        observations = pd.DataFrame(columns=first_cols)
 
     ordered = [c for c in first_cols if c in observations.columns]
     ordered += [c for c in observations.columns if c not in ordered]

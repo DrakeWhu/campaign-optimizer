@@ -36,6 +36,10 @@ DERIVED_SCORE_NAMES = frozenset(
     {
         "score_beam_longitudinal_v2",
         "score_beam_transverse_v2",
+        "score_charge_soft50_v1",
+        "score_energy_soft50_v1",
+        "score_energy_soft50_v2",
+        "score_transverse_soft50_v1",
     }
 )
 
@@ -52,6 +56,22 @@ DEFAULT_BEAM_GATED_V2_CONFIG = {
     "mono_min": 0.30,
     "mono_ref": 0.65,
     "transverse_ref": 0.02,
+    "score_scale": 100.0,
+}
+
+DEFAULT_SOFT50_V1_CONFIG = {
+    "energy_low_MeV": 10.0,
+    "energy_target_MeV": 50.0,
+    "energy_ref_MeV": 200.0,
+    "energy_relative_spread_ref": 0.25,
+    "energy_spread_weight": 0.20,
+    "charge_scale_pC": 10.0,
+    "charge_ref_pC": 1000.0,
+    "reliability_floor": 0.05,
+    "effective_count_reference": 200.0,
+    "transverse_charge_activation_pC": 25.0,
+    "theta_p95_ref_mrad": 15.0,
+    "emitn_xy_ref_um_rad": 2.0,
     "score_scale": 100.0,
 }
 
@@ -138,6 +158,210 @@ def _beam_v2_config(objective_config: dict[str, Any]) -> dict[str, float]:
         raise ValueError("objective.beam_gated_v2 must be an object")
     cfg.update(shared)
     return {key: float(value) for key, value in cfg.items()}
+
+
+def _soft50_config(objective_config: dict[str, Any]) -> dict[str, float]:
+    cfg = dict(DEFAULT_SOFT50_V1_CONFIG)
+    override = objective_config.get("soft50_v1", {}) or {}
+    if not isinstance(override, dict):
+        raise ValueError("objective.soft50_v1 must be an object")
+    cfg.update(override)
+    out = {key: float(value) for key, value in cfg.items()}
+    if out["energy_low_MeV"] < 0.0:
+        raise ValueError("soft50 energy_low_MeV must be non-negative")
+    if out["energy_target_MeV"] <= out["energy_low_MeV"]:
+        raise ValueError("soft50 energy_target_MeV must exceed energy_low_MeV")
+    if out["energy_ref_MeV"] <= out["energy_target_MeV"]:
+        raise ValueError("soft50 energy_ref_MeV must exceed energy_target_MeV")
+    if out["energy_relative_spread_ref"] <= 0.0:
+        raise ValueError("soft50 energy_relative_spread_ref must be positive")
+    if not 0.0 <= out["energy_spread_weight"] <= 1.0:
+        raise ValueError("soft50 energy_spread_weight must be within [0, 1]")
+    if out["charge_scale_pC"] <= 0.0 or out["charge_ref_pC"] <= 0.0:
+        raise ValueError("soft50 charge scales must be positive")
+    if not 0.0 <= out["reliability_floor"] <= 1.0:
+        raise ValueError("soft50 reliability_floor must be within [0, 1]")
+    if out["effective_count_reference"] <= 0.0:
+        raise ValueError("soft50 effective_count_reference must be positive")
+    for name in [
+        "transverse_charge_activation_pC",
+        "theta_p95_ref_mrad",
+        "emitn_xy_ref_um_rad",
+        "score_scale",
+    ]:
+        if out[name] <= 0.0:
+            raise ValueError(f"soft50 {name} must be positive")
+    return out
+
+
+def _smoothstep01(value: float) -> float:
+    u = _clamp01(value)
+    return u * u * (3.0 - 2.0 * u)
+
+
+def _soft50_inputs(
+    row: pd.Series,
+    cfg: dict[str, float],
+) -> tuple[float, float, float, str] | tuple[None, None, None, str]:
+    charge, charge_source = _first_finite(
+        row, ["metric_particle_charge_soft50_pC"]
+    )
+    n_effective, n_source = _first_finite(
+        row, ["metric_particle_n_effective_soft50"]
+    )
+    if not math.isfinite(charge):
+        return None, None, None, "metric_particle_charge_soft50_pC"
+    if not math.isfinite(n_effective):
+        return None, None, None, "metric_particle_n_effective_soft50"
+    reliability = cfg["reliability_floor"] + (
+        1.0 - cfg["reliability_floor"]
+    ) * (1.0 - math.exp(-max(n_effective, 0.0) / cfg["effective_count_reference"]))
+    return max(charge, 0.0), max(n_effective, 0.0), reliability, ";".join(
+        [charge_source, n_source]
+    )
+
+
+def _charge_soft50_v1(
+    row: pd.Series, cfg: dict[str, float]
+) -> tuple[float, str, str]:
+    charge, _, reliability, source = _soft50_inputs(row, cfg)
+    if charge is None or reliability is None:
+        return float("nan"), "missing_metric", source
+    denominator = math.log1p(cfg["charge_ref_pC"] / cfg["charge_scale_pC"])
+    component = _clamp01(
+        math.log1p(charge / cfg["charge_scale_pC"]) / denominator
+    )
+    return (
+        cfg["score_scale"] * component * reliability,
+        "ok",
+        f"derived:charge_soft50_v1;{source}",
+    )
+
+
+def _soft_energy_component(energy: float, cfg: dict[str, float]) -> float:
+    low = cfg["energy_low_MeV"]
+    target = cfg["energy_target_MeV"]
+    reference = cfg["energy_ref_MeV"]
+    if not math.isfinite(energy) or energy <= low:
+        return 0.0
+    if energy < target:
+        return 0.5 * _smoothstep01((energy - low) / (target - low))
+    return 0.5 + 0.5 * _clamp01(
+        math.log(energy / target) / math.log(reference / target)
+    )
+
+
+def _energy_soft50_v1(
+    row: pd.Series, cfg: dict[str, float]
+) -> tuple[float, str, str]:
+    charge, _, reliability, base_source = _soft50_inputs(row, cfg)
+    if charge is None or reliability is None:
+        return float("nan"), "missing_metric", base_source
+    energy, energy_source = _first_finite(
+        row, ["metric_particle_energy_p90_soft50_MeV"]
+    )
+    if not math.isfinite(energy):
+        if charge <= 0.0:
+            return 0.0, "ok", f"derived:energy_soft50_v1:no_accepted_particles;{base_source}"
+        return (
+            float("nan"),
+            "missing_metric",
+            "metric_particle_energy_p90_soft50_MeV",
+        )
+    return (
+        cfg["score_scale"] * _soft_energy_component(energy, cfg) * reliability,
+        "ok",
+        f"derived:energy_soft50_v1;{base_source};{energy_source}",
+    )
+
+
+def _energy_soft50_v2(
+    row: pd.Series, cfg: dict[str, float]
+) -> tuple[float, str, str]:
+    """Prioritize energy while softly preferring a narrower energy spectrum."""
+
+    charge, _, reliability, base_source = _soft50_inputs(row, cfg)
+    if charge is None or reliability is None:
+        return float("nan"), "missing_metric", base_source
+    energy, energy_source = _first_finite(
+        row, ["metric_particle_energy_p90_soft50_MeV"]
+    )
+    if not math.isfinite(energy):
+        if charge <= 0.0:
+            return 0.0, "ok", f"derived:energy_soft50_v2:no_accepted_particles;{base_source}"
+        return (
+            float("nan"),
+            "missing_metric",
+            "metric_particle_energy_p90_soft50_MeV",
+        )
+    if charge <= 0.0:
+        return 0.0, "ok", f"derived:energy_soft50_v2:no_accepted_particles;{base_source}"
+
+    spread, spread_source = _first_finite(
+        row, ["metric_particle_energy_relative_spread_rms_soft50"]
+    )
+    if not math.isfinite(spread) or spread < 0.0:
+        return (
+            float("nan"),
+            "missing_metric",
+            "metric_particle_energy_relative_spread_rms_soft50",
+        )
+
+    spread_quality = _inverse_quality_component(
+        spread, cfg["energy_relative_spread_ref"]
+    )
+    spread_factor = (
+        1.0 - cfg["energy_spread_weight"]
+        + cfg["energy_spread_weight"] * spread_quality
+    )
+    return (
+        cfg["score_scale"]
+        * _soft_energy_component(energy, cfg)
+        * reliability
+        * spread_factor,
+        "ok",
+        f"derived:energy_soft50_v2;{base_source};{energy_source};{spread_source}",
+    )
+
+
+def _inverse_quality_component(value: float, reference: float) -> float:
+    if not math.isfinite(value) or value < 0.0 or reference <= 0.0:
+        return 0.0
+    return 1.0 / (1.0 + (value / reference) ** 2)
+
+
+def _transverse_soft50_v1(
+    row: pd.Series, cfg: dict[str, float]
+) -> tuple[float, str, str]:
+    charge, _, reliability, base_source = _soft50_inputs(row, cfg)
+    if charge is None or reliability is None:
+        return float("nan"), "missing_metric", base_source
+    if charge <= 0.0:
+        return 0.0, "ok", f"derived:transverse_soft50_v1:no_accepted_particles;{base_source}"
+    theta, theta_source = _first_finite(
+        row, ["metric_particle_theta_r_p95_soft50_mrad"]
+    )
+    emitn, emitn_source = _first_finite(
+        row, ["metric_particle_emitn_xy_soft50_um_rad"]
+    )
+    if not math.isfinite(theta) or not math.isfinite(emitn):
+        return (
+            float("nan"),
+            "missing_metric",
+            "metric_particle_theta_r_p95_soft50_mrad/emitn_xy_soft50_um_rad",
+        )
+    charge_activation = 1.0 - math.exp(
+        -charge / cfg["transverse_charge_activation_pC"]
+    )
+    quality = math.sqrt(
+        _inverse_quality_component(theta, cfg["theta_p95_ref_mrad"])
+        * _inverse_quality_component(emitn, cfg["emitn_xy_ref_um_rad"])
+    )
+    return (
+        cfg["score_scale"] * reliability * charge_activation * quality,
+        "ok",
+        f"derived:transverse_soft50_v1;{base_source};{theta_source};{emitn_source}",
+    )
 
 
 def _beam_gate_reason(row: pd.Series, cfg: dict[str, float]) -> str | None:
@@ -326,11 +550,19 @@ def _compute_derived_score(
     score: str,
     objective_config: dict[str, Any],
 ) -> tuple[float, str, str]:
-    cfg = _beam_v2_config(objective_config)
     if score == "score_beam_longitudinal_v2":
-        return _beam_longitudinal_v2(row, cfg)
+        return _beam_longitudinal_v2(row, _beam_v2_config(objective_config))
     if score == "score_beam_transverse_v2":
-        return _beam_transverse_v2(row, cfg)
+        return _beam_transverse_v2(row, _beam_v2_config(objective_config))
+    cfg = _soft50_config(objective_config)
+    if score == "score_charge_soft50_v1":
+        return _charge_soft50_v1(row, cfg)
+    if score == "score_energy_soft50_v1":
+        return _energy_soft50_v1(row, cfg)
+    if score == "score_energy_soft50_v2":
+        return _energy_soft50_v2(row, cfg)
+    if score == "score_transverse_soft50_v1":
+        return _transverse_soft50_v1(row, cfg)
     raise ValueError(f"Unknown derived score: {score}")
 
 
@@ -444,14 +676,9 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
             if score in required_for_fit and status != "ok":
                 failures.append(f"{score}:{status}")
 
-        # 2. Scores derivados: funciones físicas compuestas/gated.
-        #
-        # Aquí entran:
-        #   - score_beam_longitudinal_v2
-        #   - score_beam_transverse_v2
-        #
-        # Estos NO salen de una sola columna. Se calculan combinando carga,
-        # número de partículas, beamlike/yield, energía y calidad transversal.
+        # 2. Derived scores combine several persisted physical metrics. This
+        # includes both the legacy hard-gated v2 scores and the continuous
+        # soft50 charge/energy/transverse scores.
         for score in derived_scores:
             value, status, source_col = _compute_derived_score(
                 row,
@@ -483,4 +710,24 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
         rows.append(out)
 
     objectives = pd.DataFrame(rows)
+    if objectives.empty:
+        columns = [
+            "observation_id",
+            "objective_schema_version",
+            "objective_config_id",
+            "objective_config_hash",
+            "objective_status",
+            "objective_failure_reason",
+        ]
+        for score in all_scores:
+            columns.extend(
+                [
+                    score,
+                    f"{score}_status",
+                    f"{score}_direction",
+                    f"{score}_source_metric",
+                ]
+            )
+        columns.append("fit_eligible")
+        objectives = pd.DataFrame(columns=columns)
     return write_csv(inputs_dir / "objective_table.csv", objectives)

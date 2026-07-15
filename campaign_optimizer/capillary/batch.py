@@ -13,6 +13,7 @@ from campaign_optimizer.io import read_table, write_json, write_tsv
 from campaign_optimizer.state import now_utc, write_optimizer_state
 
 from .parsing import normalize_laser_case, parse_float
+from .parameters import resonant_duration_fwhm_fs
 
 
 RECOMMENDED_REQUIRED_COLUMNS = [
@@ -41,6 +42,9 @@ CANDIDATE_BATCH_REQUIRED_COLUMNS = [
     "DIAMETER_UM",
     "RADIUS_UM",
     "FOCUS_OFFSET_FROM_PLATEAU_START_MM",
+    "NITROGEN_DOPANT_FRACTION",
+    "PULSE_RESONANCE_FACTOR",
+    "LASER_DURATION_FWHM_FS",
     "CAP_RMAX_UM",
     "CAP_NR",
 ]
@@ -53,6 +57,10 @@ CANDIDATE_BATCH_PROVENANCE_COLUMNS = [
     "OPT_SOURCE_OBSERVATION_ID",
     "OPT_RANKING_SOURCE",
     "OPT_ACQUISITION_VALUE",
+    "OPT_SAMPLE_SOURCE",
+    "OPT_SOBOL_INDEX",
+    "OPT_REFERENCE_ID",
+    "OPT_CANDIDATE_SIGNATURE",
 ]
 
 EXPECTED_WORKFLOW = [
@@ -92,6 +100,18 @@ def require_columns(df: pd.DataFrame, required: list[str], *, table_name: str) -
         )
 
 
+def optional_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value)
+
+
+def optional_scalar(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return ""
+    return value
+
+
 def format_float_token(value: float, *, ndigits: int = 6) -> str:
     if not math.isfinite(float(value)):
         raise ValueError(f"cannot format non-finite value in CASE_NAME: {value!r}")
@@ -128,13 +148,17 @@ def safe_case_name(
     plateau_mm: float,
     diameter_um: float,
     focus_mm: float,
+    nitrogen_fraction: float = 0.0,
+    laser_duration_fwhm_fs: float = 30.0,
 ) -> str:
     raw = (
         f"{case_id:03d}_{laser_case}_{plasma_kind}_"
         f"n{format_float_token(n0_1e18cm3)}e18cm3_"
         f"L{format_float_token(plateau_mm)}mm_"
         f"d{format_float_token(diameter_um)}um_"
-        f"foc{format_float_token(focus_mm)}mm_rz"
+        f"foc{format_float_token(focus_mm)}mm_"
+        f"N2pct{format_float_token(100.0 * nitrogen_fraction)}_"
+        f"tau{format_float_token(laser_duration_fwhm_fs)}fs_rz"
     )
     name = _SAFE_CASE_NAME_RE.sub("_", raw)
 
@@ -157,10 +181,12 @@ def compute_cap_rmax_um(
         value = parse_float(policy.get("factor")) * float(diameter_um)
     elif mode == "radius_factor":
         value = parse_float(policy.get("factor")) * float(radius_um)
+    elif mode == "radius_plus_margin":
+        value = float(radius_um) + parse_float(policy.get("margin_um"))
     else:
         raise ValueError(
             "candidate_batch.cap_rmax_um.policy must be one of: "
-            "fixed, diameter_factor, radius_factor"
+            "fixed, diameter_factor, radius_factor, radius_plus_margin"
         )
 
     if not math.isfinite(value) or value <= 0:
@@ -169,6 +195,31 @@ def compute_cap_rmax_um(
         )
 
     return float(value)
+
+
+def compute_cap_nr(cap_rmax_um: float, batch_config: dict[str, Any]) -> int:
+    """Preserve radial resolution while the physical capillary radius changes."""
+
+    grid = batch_config.get("cap_radial_grid")
+    if not grid:
+        value = int(batch_config.get("cap_nr", 192))
+        if value <= 0:
+            raise ValueError("candidate_batch.cap_nr must be positive")
+        return value
+    if not isinstance(grid, dict):
+        raise ValueError("candidate_batch.cap_radial_grid must be an object")
+
+    dr_um = parse_float(grid.get("dr_um"))
+    blocking_factor = int(grid.get("blocking_factor", 1))
+    minimum = int(grid.get("min_nr", blocking_factor))
+    if not math.isfinite(dr_um) or dr_um <= 0.0:
+        raise ValueError("candidate_batch.cap_radial_grid.dr_um must be positive")
+    if blocking_factor <= 0 or minimum <= 0:
+        raise ValueError(
+            "candidate_batch.cap_radial_grid blocking_factor/min_nr must be positive"
+        )
+    cells = max(minimum, int(math.ceil(float(cap_rmax_um) / dr_um)))
+    return int(math.ceil(cells / blocking_factor) * blocking_factor)
 
 
 def _source_campaigns_for_plan(
@@ -218,10 +269,6 @@ def recommended_candidates_to_candidate_batch(
             "Phase 2 candidate batch generation only supports PLASMA_KIND=chan"
         )
 
-    cap_nr = int(batch_config.get("cap_nr", 192))
-    if cap_nr <= 0:
-        raise ValueError("candidate_batch.cap_nr must be positive")
-
     raw_cap_rmax_policy = batch_config.get("cap_rmax_um")
     if not isinstance(raw_cap_rmax_policy, dict) or not raw_cap_rmax_policy:
         raise ValueError(
@@ -251,18 +298,45 @@ def recommended_candidates_to_candidate_batch(
         plateau = parse_float(rec["plateau_mm_num"])
         diameter = parse_float(rec["diameter_um_num"])
         focus = parse_float(rec["focus_mm_num"])
+        nitrogen_fraction = parse_float(rec.get("nitrogen_fraction", 0.0))
+        resonant_duration_fs = resonant_duration_fwhm_fs(n0_1e18)
+        if "pulse_duration_factor" in parameter_space.get("ranges", {}):
+            pulse_duration_factor = parse_float(
+                rec.get("pulse_duration_factor")
+            )
+            laser_duration_fwhm_fs = (
+                resonant_duration_fs * pulse_duration_factor
+            )
+        else:
+            laser_duration_fwhm_fs = parse_float(
+                batch_config.get("laser_duration_fwhm_fs", 30.0)
+            )
+            pulse_duration_factor = (
+                laser_duration_fwhm_fs / resonant_duration_fs
+            )
 
         for name, value in [
             ("n0_1e18cm3", n0_1e18),
             ("plateau_mm_num", plateau),
             ("diameter_um_num", diameter),
             ("focus_mm_num", focus),
+            ("nitrogen_fraction", nitrogen_fraction),
+            ("pulse_duration_factor", pulse_duration_factor),
+            ("laser_duration_fwhm_fs", laser_duration_fwhm_fs),
         ]:
             if not math.isfinite(value):
                 raise ValueError(f"recommended_candidates.tsv has non-finite {name}")
+        if not 0.0 <= nitrogen_fraction <= 1.0:
+            raise ValueError("nitrogen_fraction must be within [0, 1]")
 
         radius = 0.5 * diameter
         cap_rmax = compute_cap_rmax_um(diameter, radius, cap_rmax_policy)
+        if cap_rmax <= radius:
+            raise ValueError(
+                "CAP_RMAX_UM must exceed the capillary radius; "
+                f"got rmax={cap_rmax}, radius={radius}"
+            )
+        cap_nr = compute_cap_nr(cap_rmax, batch_config)
         case_name = safe_case_name(
             case_id=case_id,
             laser_case=laser_case,
@@ -271,6 +345,8 @@ def recommended_candidates_to_candidate_batch(
             plateau_mm=plateau,
             diameter_um=diameter,
             focus_mm=focus,
+            nitrogen_fraction=nitrogen_fraction,
+            laser_duration_fwhm_fs=laser_duration_fwhm_fs,
         )
 
         if case_name in seen_names:
@@ -288,15 +364,28 @@ def recommended_candidates_to_candidate_batch(
                 "DIAMETER_UM": diameter,
                 "RADIUS_UM": radius,
                 "FOCUS_OFFSET_FROM_PLATEAU_START_MM": focus,
+                "NITROGEN_DOPANT_FRACTION": nitrogen_fraction,
+                "PULSE_RESONANCE_FACTOR": pulse_duration_factor,
+                "LASER_DURATION_FWHM_FS": laser_duration_fwhm_fs,
                 "CAP_RMAX_UM": cap_rmax,
                 "CAP_NR": cap_nr,
                 "OPT_ITERATION": int(rec.get("optimizer_iteration", iteration)),
                 "OPT_CANDIDATE_ID": str(rec.get("candidate_id", "")),
                 "OPT_RECOMMENDATION_ID": str(rec.get("recommendation_id", "")),
                 "OPT_OBJECTIVE_CONFIG_ID": objective_config_id,
-                "OPT_SOURCE_OBSERVATION_ID": str(rec.get("source_observation_id", "")),
-                "OPT_RANKING_SOURCE": str(rec.get("ranking_source", "")),
-                "OPT_ACQUISITION_VALUE": rec.get("acquisition_value", ""),
+                "OPT_SOURCE_OBSERVATION_ID": optional_text(
+                    rec.get("source_observation_id", "")
+                ),
+                "OPT_RANKING_SOURCE": optional_text(rec.get("ranking_source", "")),
+                "OPT_ACQUISITION_VALUE": optional_scalar(
+                    rec.get("acquisition_value", "")
+                ),
+                "OPT_SAMPLE_SOURCE": optional_text(rec.get("candidate_source", "")),
+                "OPT_SOBOL_INDEX": optional_scalar(rec.get("sobol_index", "")),
+                "OPT_REFERENCE_ID": optional_text(rec.get("reference_id", "")),
+                "OPT_CANDIDATE_SIGNATURE": optional_text(
+                    rec.get("candidate_signature", "")
+                ),
             }
         )
 

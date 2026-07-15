@@ -95,6 +95,7 @@ DEFAULT_REDUCED_OUTPUTS = {
     "guiding_singlecase_score": "guiding_singlecase_score.csv",
     "particle_summary": "particle_analysis/particle_summary.csv",
     "acceptance_curves": "particle_analysis/particle_acceptance_curves.csv",
+    "soft50_curves": "particle_analysis/particle_soft50_curves.csv",
 }
 
 DEFAULT_OPTIMIZATION_HISTORY = {
@@ -136,13 +137,26 @@ class OptimizerConfig:
 
     def source_campaigns(self) -> list[dict[str, Any]]:
         value = self.data.get("source_campaigns")
-        if value is None and self.problem_kind() == "multichannel":
+        recommendation = self.data.get("recommendation", {}) or {}
+        backend = str(recommendation.get("backend", "morbo_like")).strip().lower()
+        starts_without_history = backend in {
+            "sobol_then_morbo",
+            "sobol-to-morbo",
+            "sobol_to_morbo",
+        }
+        if value is None and (
+            self.problem_kind() == "multichannel" or starts_without_history
+        ):
             return []
         if not isinstance(value, list):
             raise ValueError(
                 "optimizer.json must define source_campaigns as a list"
             )
-        if not value and self.problem_kind() != "multichannel":
+        if (
+            not value
+            and self.problem_kind() != "multichannel"
+            and not starts_without_history
+        ):
             raise ValueError(
                 "optimizer.json must define a non-empty source_campaigns list"
             )
