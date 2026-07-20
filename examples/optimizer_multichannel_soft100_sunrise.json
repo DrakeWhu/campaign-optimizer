@@ -148,13 +148,13 @@
     "backend": "sobol_then_morbo",
     "suggestion_mode": "regional_model",
     "seed": 20260720,
-    "n_candidates": 4,
+    "n_candidates": 8,
     "min_observations": null,
     "initial_design": {
       "include_reference": true,
       "sobol_points": 16,
       "initial_batch_size": 8,
-      "continuation_batch_size": 4,
+      "continuation_batch_size": 8,
       "seed": 20260720
     },
     "regional_policy": {
