@@ -6,7 +6,7 @@ import unittest
 
 
 CONFIG = Path("examples/optimizer_clpu_corrected_soft50_sunrise.json")
-EXPECTED_NAME = "clpu_capillary_guiding_bo_004_corrected_n2_soft50_v2"
+EXPECTED_NAME = "clpu_capillary_guiding_bo_004_corrected_n2_soft50_v3"
 
 
 class CorrectedClpuSunriseExampleTests(unittest.TestCase):
