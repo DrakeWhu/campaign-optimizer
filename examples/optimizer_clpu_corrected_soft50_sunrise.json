@@ -5,7 +5,7 @@
   "source_campaigns": [],
   "optimization_history": {
     "enabled": true,
-    "optimization_name": "clpu_capillary_guiding_bo_004_corrected_n2_soft50",
+    "optimization_name": "clpu_capillary_guiding_bo_004_corrected_n2_soft50_v2",
     "iterations_root": "iterations",
     "cases_tsv": "cases.tsv",
     "campaign_name_template": "{optimization_name}_iter_{iteration:03d}",
