@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "problem": {
+    "kind": "multichannel"
+  },
+  "optimizer_run_root": "optimizer_runs",
+  "source_campaigns": [],
+  "optimization_history": {
+    "enabled": true,
+    "optimization_name": "multichannel_honeycomb_3d_energy_soft_v2",
+    "iterations_root": "iterations",
+    "cases_tsv": "cases.tsv",
+    "campaign_name_template": "{optimization_name}_iter_{iteration:03d}",
+    "reduced_outputs": {
+      "particle_summary": "post/particle_summary.csv"
+    }
+  },
+  "parameter_space": {
+    "version": 1,
+    "parameters": [
+      {
+        "name": "plasma_ion_density_m3",
+        "column": "PLASMA_ION_DENSITY_M3",
+        "type": "log_float",
+        "bounds": [5.0e24, 5.0e25]
+      },
+      {
+        "name": "cnt_radius_um",
+        "column": "CNT_RADIUS_UM",
+        "type": "float",
+        "bounds": [0.75, 3.0]
+      },
+      {
+        "name": "cnt_gap_um",
+        "column": "CNT_GAP_UM",
+        "type": "float",
+        "bounds": [0.35, 1.2]
+      },
+      {
+        "name": "laser_waist_um",
+        "column": "LASER_WAIST_UM",
+        "type": "float",
+        "bounds": [0.8, 2.5]
+      },
+      {
+        "name": "plasma_length_um",
+        "column": "PLASMA_LENGTH_UM",
+        "type": "float",
+        "bounds": [30.0, 150.0]
+      },
+      {
+        "name": "plasma_halfwidth_x_um",
+        "column": "PLASMA_HALF_WIDTH_X_UM",
+        "type": "float",
+        "bounds": [8.0, 16.0]
+      },
+      {
+        "name": "plasma_halfwidth_y_um",
+        "column": "PLASMA_HALF_WIDTH_Y_UM",
+        "type": "float",
+        "bounds": [8.0, 16.0]
+      },
+      {
+        "name": "focus_offset_from_plasma_start_um",
+        "column": "FOCUS_OFFSET_FROM_PLASMA_START_UM",
+        "type": "float",
+        "bounds": [-5.0, 30.0]
+      },
+      {
+        "name": "honeycomb_angle_deg",
+        "column": "HONEYCOMB_ANGLE_DEG",
+        "type": "periodic",
+        "bounds": [0.0, 60.0]
+      },
+      {
+        "name": "polarization_angle_deg",
+        "column": "POLARIZATION_ANGLE_DEG",
+        "type": "periodic",
+        "bounds": [0.0, 180.0]
+      },
+      {
+        "name": "ellipticity_angle_deg",
+        "column": "ELLIPTICITY_ANGLE_DEG",
+        "type": "float",
+        "bounds": [-45.0, 45.0]
+      }
+    ],
+    "reference": {
+      "plasma_ion_density_m3": 1.0e25,
+      "cnt_radius_um": 2.0,
+      "cnt_gap_um": 0.75,
+      "laser_waist_um": 1.0,
+      "plasma_length_um": 100.0,
+      "plasma_halfwidth_x_um": 16.0,
+      "plasma_halfwidth_y_um": 16.0,
+      "focus_offset_from_plasma_start_um": 5.0,
+      "honeycomb_angle_deg": 0.0,
+      "polarization_angle_deg": 90.0,
+      "ellipticity_angle_deg": 0.0
+    }
+  },
+  "objective": {
+    "schema_version": 1,
+    "config_id": "multichannel_energy_soft100_v2",
+    "objectives": [
+      {
+        "name": "useful_charge_soft100",
+        "metric": "charge_soft100_pC",
+        "sense": "max",
+        "transform": "log10p"
+      },
+      {
+        "name": "robust_energy_soft100",
+        "metric": "energy_p95_soft100_MeV",
+        "sense": "max",
+        "transform": "identity"
+      },
+      {
+        "name": "divergence_p95_soft100",
+        "metric": "theta_r_p95_soft100_mrad",
+        "sense": "min",
+        "transform": "log10p"
+      },
+      {
+        "name": "normalized_emittance_xy_soft100",
+        "metric": "emitn_xy_soft100_um_rad",
+        "sense": "min",
+        "transform": "log10p"
+      },
+      {
+        "name": "relative_energy_spread_soft100",
+        "metric": "energy_relative_spread_rms_soft100",
+        "sense": "min",
+        "transform": "identity"
+      }
+    ],
+    "eligibility": {
+      "minimum_metric": "n_effective_soft100",
+      "minimum_value": 100.0,
+      "require_positive_charge": true,
+      "positive_metric": "charge_soft100_pC",
+      "required_status_metric": "soft100_status",
+      "required_status_value": "ok",
+      "require_finite_parameters": true
+    }
+  },
+  "recommendation": {
+    "backend": "sobol_then_morbo",
+    "suggestion_mode": "regional_model",
+    "seed": 20260720,
+    "n_candidates": 4,
+    "min_observations": null,
+    "initial_design": {
+      "include_reference": true,
+      "sobol_points": 16,
+      "initial_batch_size": 8,
+      "continuation_batch_size": 4,
+      "seed": 20260720
+    },
+    "regional_policy": {
+      "max_regions": 3,
+      "initial_radius": 0.25,
+      "min_radius": 0.05,
+      "max_radius": 0.5,
+      "expansion_factor": 1.2,
+      "contraction_factor": 0.7,
+      "restart_failure_threshold": 3,
+      "local_min_observations": 3
+    },
+    "categorical_policy": {
+      "mode": "fixed",
+      "epsilon": 0.0
+    },
+    "botorch": {
+      "enabled": true,
+      "fallback_to_random": true,
+      "candidate_pool_size_per_region": 512,
+      "mc_samples": 128,
+      "fit_maxiter": 100
+    }
+  },
+  "candidate_batch": {
+    "case_id_start": 0,
+    "write_fields_for_reference": true,
+    "campaign_template": {
+      "campaign_json": "campaign.json",
+      "input_template": "input_template.py"
+    }
+  },
+  "validation": {
+    "require_case_validation": true
+  }
+}

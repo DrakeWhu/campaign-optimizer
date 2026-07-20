@@ -62,6 +62,18 @@ class MultichannelOptimizerTests(unittest.TestCase):
                         "emitn_xy_um_rad": 0.8 + 0.01 * offset,
                         "forward_fraction": 0.9,
                         "pz_mean_MeV_c": 60.0 + offset,
+                        "soft100_status": "ok",
+                        "n_macroparticles_soft100": 800 + offset,
+                        "charge_soft100_pC": 18.0 + offset,
+                        "n_effective_soft100": 150.0 + offset,
+                        "reliability_soft100": 0.8,
+                        "energy_p95_soft100_MeV": 90.0 + 3.0 * offset,
+                        "energy_relative_spread_rms_soft100": 0.12
+                        + 0.002 * offset,
+                        "theta_r_p95_soft100_mrad": 6.0 + 0.1 * offset,
+                        "emitn_xy_soft100_um_rad": 0.6 + 0.01 * offset,
+                        "charge_Ege100MeV_pC": 10.0 + offset,
+                        "halo_fraction_soft100": 0.25,
                     }
                 ]
             ).to_csv(post_dir / "particle_summary.csv", index=False)
@@ -169,6 +181,107 @@ class MultichannelOptimizerTests(unittest.TestCase):
                 == 1
             ).all()
         )
+
+    def test_soft100_example_declares_five_raw_physics_objectives(self) -> None:
+        example = Path("examples/optimizer_multichannel_soft100_sunrise.json")
+        self.config_path.write_text(
+            example.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        config = load_optimizer_config(self.config_path)
+        objectives = config.objective_config()["objectives"]
+
+        self.assertEqual(len(objectives), 5)
+        self.assertEqual(
+            [item["metric"] for item in objectives],
+            [
+                "charge_soft100_pC",
+                "energy_p95_soft100_MeV",
+                "theta_r_p95_soft100_mrad",
+                "emitn_xy_soft100_um_rad",
+                "energy_relative_spread_rms_soft100",
+            ],
+        )
+        self.assertEqual(
+            [item["sense"] for item in objectives],
+            ["max", "max", "min", "min", "min"],
+        )
+
+    def test_soft100_eligibility_uses_effective_count_and_status(self) -> None:
+        example = Path("examples/optimizer_multichannel_soft100_sunrise.json")
+        self.config_path.write_text(
+            example.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        rc = run_iteration_main(
+            [
+                "--config",
+                str(self.config_path),
+                "--iteration",
+                "0",
+                "--build-candidate-batch",
+            ]
+        )
+        self.assertEqual(rc, 0)
+
+        candidate_batch = pd.read_csv(
+            self.root
+            / "optimizer_runs"
+            / "iter_000"
+            / "outputs"
+            / "candidate_batch.tsv",
+            sep="\t",
+        )
+        self._write_completed_campaign(0, candidate_batch)
+
+        first_case = candidate_batch.iloc[0]["CASE_NAME"]
+        first_summary = (
+            self.root
+            / "iterations"
+            / "iter_000"
+            / str(first_case)
+            / "post"
+            / "particle_summary.csv"
+        )
+        metrics = pd.read_csv(first_summary)
+        metrics.loc[0, "n_effective_soft100"] = 99.0
+        metrics.to_csv(first_summary, index=False)
+
+        rc = run_iteration_main(
+            [
+                "--config",
+                str(self.config_path),
+                "--iteration",
+                "1",
+                "--build-candidate-batch",
+            ]
+        )
+        self.assertEqual(rc, 0)
+
+        objective_table = pd.read_csv(
+            self.root
+            / "optimizer_runs"
+            / "iter_001"
+            / "inputs"
+            / "objective_table.csv"
+        )
+        self.assertEqual(len(objective_table), 9)
+        self.assertEqual(int(objective_table["fit_eligible"].sum()), 8)
+        excluded = objective_table.loc[~objective_table["fit_eligible"]].iloc[0]
+        self.assertIn(
+            "insufficient_metric:n_effective_soft100",
+            excluded["fit_exclusion_reason"],
+        )
+        for name in (
+            "useful_charge_soft100",
+            "robust_energy_soft100",
+            "divergence_p95_soft100",
+            "normalized_emittance_xy_soft100",
+            "relative_energy_spread_soft100",
+        ):
+            self.assertIn(name, objective_table.columns)
+            self.assertIn(f"canonical_{name}", objective_table.columns)
 
     def test_design_continues_then_switches_to_four_morbo_candidates(self) -> None:
         for iteration in (0, 1):

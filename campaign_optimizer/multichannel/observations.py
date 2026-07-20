@@ -25,6 +25,17 @@ BEAM_METRIC_COLUMNS = (
     "emitn_xy_um_rad",
     "forward_fraction",
     "pz_mean_MeV_c",
+    "soft100_status",
+    "n_macroparticles_soft100",
+    "charge_soft100_pC",
+    "n_effective_soft100",
+    "reliability_soft100",
+    "energy_p95_soft100_MeV",
+    "energy_relative_spread_rms_soft100",
+    "theta_r_p95_soft100_mrad",
+    "emitn_xy_soft100_um_rad",
+    "charge_Ege100MeV_pC",
+    "halo_fraction_soft100",
 )
 
 

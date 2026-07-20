@@ -29,9 +29,30 @@ def build_objectives(config: OptimizerConfig, iteration: int):
     objective_config = config.objective_config()
     objective_spec = ObjectiveSpec.from_dict(objective_config)
     eligibility = dict(objective_config.get("eligibility", {}) or {})
-    minimum_selected = int(eligibility.get("minimum_selected_macroparticles", 200))
+    minimum_metric = str(
+        eligibility.get("minimum_metric", "n_macroparticles_selected")
+    ).strip()
+    minimum_default = eligibility.get("minimum_selected_macroparticles", 200)
+    minimum_value = _finite_float(
+        eligibility.get("minimum_value", minimum_default)
+    )
+    if not minimum_metric or minimum_value is None:
+        raise ValueError("eligibility minimum_metric/minimum_value are invalid")
+
     require_positive_charge = bool(
         eligibility.get("require_positive_charge", True)
+    )
+    positive_metric = str(
+        eligibility.get("positive_metric", "charge_selected_pC")
+    ).strip()
+    if require_positive_charge and not positive_metric:
+        raise ValueError("eligibility positive_metric must not be empty")
+
+    required_status_metric = str(
+        eligibility.get("required_status_metric", "")
+    ).strip()
+    required_status_value = str(
+        eligibility.get("required_status_value", "ok")
     )
     require_finite_parameters = bool(
         eligibility.get("require_finite_parameters", True)
@@ -49,13 +70,26 @@ def build_objectives(config: OptimizerConfig, iteration: int):
         if str(observation.get("simulation_status", "")) != "finished":
             reasons.append("simulation_not_reduced_valid")
 
-        selected = _finite_float(observation.get("n_macroparticles_selected"))
-        if selected is None or selected < minimum_selected:
-            reasons.append("insufficient_selected_macroparticles")
+        minimum_observed = _finite_float(observation.get(minimum_metric))
+        if minimum_observed is None or minimum_observed < minimum_value:
+            if minimum_metric == "n_macroparticles_selected":
+                reasons.append("insufficient_selected_macroparticles")
+            else:
+                reasons.append(f"insufficient_metric:{minimum_metric}")
 
-        charge = _finite_float(observation.get("charge_selected_pC"))
-        if require_positive_charge and (charge is None or charge <= 0.0):
-            reasons.append("nonpositive_or_missing_charge")
+        positive_observed = _finite_float(observation.get(positive_metric))
+        if require_positive_charge and (
+            positive_observed is None or positive_observed <= 0.0
+        ):
+            if positive_metric == "charge_selected_pC":
+                reasons.append("nonpositive_or_missing_charge")
+            else:
+                reasons.append(f"nonpositive_or_missing:{positive_metric}")
+
+        if required_status_metric:
+            observed_status = str(observation.get(required_status_metric, ""))
+            if observed_status != required_status_value:
+                reasons.append(f"status_mismatch:{required_status_metric}")
 
         if require_finite_parameters:
             for name in parameter_names(config.parameter_space()):
@@ -75,8 +109,10 @@ def build_objectives(config: OptimizerConfig, iteration: int):
             "observation_id": observation.get("observation_id", ""),
             "fit_eligible": not reasons and resolved.eligible,
             "fit_exclusion_reason": ";".join(dict.fromkeys(reasons)),
-            "n_macroparticles_selected": selected,
-            "charge_selected_pC": charge,
+            "eligibility_minimum_metric": minimum_metric,
+            "eligibility_minimum_value": minimum_value,
+            minimum_metric: minimum_observed,
+            positive_metric: positive_observed,
         }
         for objective in objective_spec.objectives:
             raw_value = raw_metrics.get(objective.metric)
@@ -100,8 +136,10 @@ def build_objectives(config: OptimizerConfig, iteration: int):
             "observation_id",
             "fit_eligible",
             "fit_exclusion_reason",
-            "n_macroparticles_selected",
-            "charge_selected_pC",
+            "eligibility_minimum_metric",
+            "eligibility_minimum_value",
+            minimum_metric,
+            positive_metric,
         ]
         for objective in objective_spec.objectives:
             columns.extend(
