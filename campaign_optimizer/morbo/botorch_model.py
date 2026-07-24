@@ -107,10 +107,11 @@ def suggest_botorch_regional_candidates(
     config: BotorchRegionalConfig,
     categorical_policy: CategoricalRegionalPolicy | None = None,
 ) -> BotorchRegionalResult:
-    """Fit a BoTorch qNEHVI/qLogNEHVI model and rank regional candidate pools.
+    """Fit a single- or multi-objective BoTorch model and rank a regional pool.
 
-    This function is intentionally self-contained and uses lazy imports so that
-    the repository can still run unit tests without torch/botorch installed.
+    One objective uses qLogNEI/qNEI. Two or more objectives preserve the
+    qLogNEHVI/qNEHVI path. Imports stay lazy so the pure unit-test suite can run
+    without torch or botorch installed.
     """
 
     if n <= 0:
@@ -171,19 +172,30 @@ def _lazy_botorch_imports() -> dict[str, Any]:
         from botorch.fit import fit_gpytorch_mll
 
     try:
+        from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+
+        single_acqf_class = qLogNoisyExpectedImprovement
+        single_acqf_name = "qLogNoisyExpectedImprovement"
+    except Exception:
+        from botorch.acquisition.monte_carlo import qNoisyExpectedImprovement
+
+        single_acqf_class = qNoisyExpectedImprovement
+        single_acqf_name = "qNoisyExpectedImprovement"
+
+    try:
         from botorch.acquisition.multi_objective.logei import (
             qLogNoisyExpectedHypervolumeImprovement,
         )
 
-        acqf_class = qLogNoisyExpectedHypervolumeImprovement
-        acqf_name = "qLogNoisyExpectedHypervolumeImprovement"
+        multi_acqf_class = qLogNoisyExpectedHypervolumeImprovement
+        multi_acqf_name = "qLogNoisyExpectedHypervolumeImprovement"
     except Exception:
         from botorch.acquisition.multi_objective.monte_carlo import (
             qNoisyExpectedHypervolumeImprovement,
         )
 
-        acqf_class = qNoisyExpectedHypervolumeImprovement
-        acqf_name = "qNoisyExpectedHypervolumeImprovement"
+        multi_acqf_class = qNoisyExpectedHypervolumeImprovement
+        multi_acqf_name = "qNoisyExpectedHypervolumeImprovement"
 
     try:
         from botorch.models.gp_regression import SingleTaskGP
@@ -198,19 +210,58 @@ def _lazy_botorch_imports() -> dict[str, Any]:
     except Exception:
         from botorch.sampling import SobolQMCNormalSampler
 
+    from gpytorch.mlls.exact_marginal_log_likelihood import ExactMarginalLogLikelihood
     from gpytorch.mlls.sum_marginal_log_likelihood import SumMarginalLogLikelihood
 
     return {
         "torch": torch,
         "fit_gpytorch_mll": fit_gpytorch_mll,
-        "acqf_class": acqf_class,
-        "acqf_name": acqf_name,
+        "single_acqf_class": single_acqf_class,
+        "single_acqf_name": single_acqf_name,
+        "multi_acqf_class": multi_acqf_class,
+        "multi_acqf_name": multi_acqf_name,
         "SingleTaskGP": SingleTaskGP,
         "ModelListGP": ModelListGP,
         "Standardize": Standardize,
         "SobolQMCNormalSampler": SobolQMCNormalSampler,
+        "ExactMarginalLogLikelihood": ExactMarginalLogLikelihood,
         "SumMarginalLogLikelihood": SumMarginalLogLikelihood,
     }
+
+
+def _build_acquisition_function(
+    *,
+    imports: Mapping[str, Any],
+    model: Any,
+    train_X: Any,
+    sampler: Any,
+    objective_names: Sequence[str],
+    ref_point_raw: Mapping[str, float] | None,
+    prune_baseline: bool,
+) -> tuple[Any, str, str]:
+    names = tuple(str(item) for item in objective_names)
+    if not names:
+        raise ValueError("objective_names must be non-empty")
+
+    if len(names) == 1:
+        acqf = imports["single_acqf_class"](
+            model=model,
+            X_baseline=train_X,
+            prune_baseline=prune_baseline,
+            sampler=sampler,
+        )
+        return acqf, str(imports["single_acqf_name"]), "single_objective"
+
+    if ref_point_raw is None:
+        raise ValueError("multi-objective acquisition requires a reference point")
+    acqf = imports["multi_acqf_class"](
+        model=model,
+        ref_point=[float(ref_point_raw[name]) for name in names],
+        X_baseline=train_X,
+        prune_baseline=prune_baseline,
+        sampler=sampler,
+    )
+    return acqf, str(imports["multi_acqf_name"]), "multi_objective"
 
 
 def _suggest_with_botorch(
@@ -253,14 +304,18 @@ def _suggest_with_botorch(
     model, mll = _initialize_model(imports, train_X, train_Y)
     _fit_model(imports, mll, config.fit_maxiter)
 
-    ref_raw = _compute_reference_point_raw(
-        Y_rows,
-        objective_names,
-        quantile=config.ref_point_quantile,
-        margin=config.ref_point_margin,
-    )
     y_transform = _compute_y_transform(Y_rows, objective_names)
-    ref_model = _to_model_units(ref_raw, y_transform)
+    if y_dim == 1:
+        ref_raw = None
+        ref_model = None
+    else:
+        ref_raw = _compute_reference_point_raw(
+            Y_rows,
+            objective_names,
+            quantile=config.ref_point_quantile,
+            margin=config.ref_point_margin,
+        )
+        ref_model = _to_model_units(ref_raw, y_transform)
 
     pool = _sample_regional_pool(
         codec=codec,
@@ -270,10 +325,7 @@ def _suggest_with_botorch(
         pool_size_per_region=config.candidate_pool_size_per_region,
         categorical_policy=categorical_policy,
     )
-    candidate_pool_categorical_counts = _categorical_pool_counts(
-        pool,
-        codec=codec,
-    )
+    candidate_pool_categorical_counts = _categorical_pool_counts(pool, codec=codec)
 
     if not pool:
         return BotorchRegionalResult(
@@ -291,17 +343,17 @@ def _suggest_with_botorch(
         )
 
     X_pool = torch.tensor([item["encoded"] for item in pool], **tkwargs)
-
     sampler = imports["SobolQMCNormalSampler"](
         sample_shape=torch.Size([config.mc_samples])
     )
-    acqf_class = imports["acqf_class"]
-    acqf = acqf_class(
+    acqf, acqf_name, acquisition_family = _build_acquisition_function(
+        imports=imports,
         model=model,
-        ref_point=[ref_raw[name] for name in objective_names],
-        X_baseline=train_X,
-        prune_baseline=config.prune_baseline,
+        train_X=train_X,
         sampler=sampler,
+        objective_names=objective_names,
+        ref_point_raw=ref_raw,
+        prune_baseline=config.prune_baseline,
     )
 
     with torch.no_grad():
@@ -316,17 +368,14 @@ def _suggest_with_botorch(
 
     selected: list[BotorchModelCandidate] = []
     selected_signatures: set[str] = set()
-
     for idx in ranked:
         value = values[idx]
         if not math.isfinite(value):
             continue
-
         item = pool[idx]
         signature = str(item["candidate_signature"])
         if signature in selected_signatures:
             continue
-
         selected.append(
             BotorchModelCandidate(
                 params=dict(item["params"]),
@@ -336,13 +385,11 @@ def _suggest_with_botorch(
             )
         )
         selected_signatures.add(signature)
-
         if len(selected) >= n:
             break
 
     status = "ok" if selected else "no_finite_acquisition_values"
     reason = None if selected else "No finite acquisition values were produced"
-
     selected_rows = [
         {
             "params": candidate.params,
@@ -366,7 +413,8 @@ def _suggest_with_botorch(
         diagnostics={
             "config": config.as_dict(),
             "categorical_policy": categorical_policy.as_dict(),
-            "acquisition_function": imports["acqf_name"],
+            "acquisition_family": acquisition_family,
+            "acquisition_function": acqf_name,
             "train_rows": len(X_rows),
             "encoded_dim": len(X_rows[0]),
             "objective_names": list(objective_names),
@@ -382,9 +430,16 @@ def _initialize_model(
     imports: Mapping[str, Any], train_X: Any, train_Y: Any
 ) -> tuple[Any, Any]:
     SingleTaskGP = imports["SingleTaskGP"]
-    ModelListGP = imports["ModelListGP"]
     Standardize = imports["Standardize"]
-    SumMarginalLogLikelihood = imports["SumMarginalLogLikelihood"]
+
+    if int(train_Y.shape[-1]) == 1:
+        model = SingleTaskGP(
+            train_X,
+            train_Y,
+            outcome_transform=Standardize(m=1),
+        )
+        mll = imports["ExactMarginalLogLikelihood"](model.likelihood, model)
+        return model, mll
 
     models = []
     for idx in range(train_Y.shape[-1]):
@@ -392,15 +447,13 @@ def _initialize_model(
         models.append(
             SingleTaskGP(train_X, train_y, outcome_transform=Standardize(m=1))
         )
-
-    model = ModelListGP(*models)
-    mll = SumMarginalLogLikelihood(model.likelihood, model)
+    model = imports["ModelListGP"](*models)
+    mll = imports["SumMarginalLogLikelihood"](model.likelihood, model)
     return model, mll
 
 
 def _fit_model(imports: Mapping[str, Any], mll: Any, fit_maxiter: int) -> None:
     fit_gpytorch_mll = imports["fit_gpytorch_mll"]
-
     try:
         fit_gpytorch_mll(
             mll,
@@ -427,7 +480,6 @@ def _sample_regional_pool(
         accepted = 0
         attempts = 0
         max_attempts = max(50, int(pool_size_per_region) * 20)
-
         while accepted < int(pool_size_per_region) and attempts < max_attempts:
             attempts += 1
             params = codec.sample_within_bounds(bounds, rng)
@@ -440,7 +492,6 @@ def _sample_regional_pool(
             signature = codec.signature(params)
             if signature in seen:
                 continue
-
             seen.add(signature)
             accepted += 1
             pool.append(
@@ -451,13 +502,11 @@ def _sample_regional_pool(
                     "region_id": region.region_id,
                 }
             )
-
     return pool
 
 
 def _finite_matrix(values: Sequence[Sequence[float]], label: str) -> list[list[float]]:
     rows: list[list[float]] = []
-
     for row_idx, row in enumerate(values):
         out_row = []
         for col_idx, value in enumerate(row):
@@ -466,17 +515,14 @@ def _finite_matrix(values: Sequence[Sequence[float]], label: str) -> list[list[f
                 raise ValueError(f"{label}[{row_idx}][{col_idx}] is not finite")
             out_row.append(numeric)
         rows.append(out_row)
-
     if not rows:
         raise ValueError(f"{label} must be non-empty")
-
     width = len(rows[0])
     if width == 0:
         raise ValueError(f"{label} rows must be non-empty")
     for row in rows:
         if len(row) != width:
             raise ValueError(f"{label} rows must have constant width")
-
     return rows
 
 
@@ -499,7 +545,6 @@ def _compute_reference_point_raw(
 ) -> dict[str, float]:
     out: dict[str, float] = {}
     width = len(objective_names)
-
     for col in range(width):
         values = sorted(float(row[col]) for row in Y_rows)
         q_idx = min(
@@ -510,7 +555,6 @@ def _compute_reference_point_raw(
         hi = values[-1]
         span = max(abs(hi - lo), abs(hi) * 1.0e-12, 1.0e-12)
         out[str(objective_names[col])] = float(lo - float(margin) * span)
-
     return out
 
 
@@ -520,7 +564,6 @@ def _compute_y_transform(
 ) -> dict[str, Any]:
     means: dict[str, float] = {}
     stds: dict[str, float] = {}
-
     for col, name in enumerate(objective_names):
         values = [float(row[col]) for row in Y_rows]
         mean = sum(values) / len(values)
@@ -533,15 +576,14 @@ def _compute_y_transform(
             std = 1.0
         means[str(name)] = float(mean)
         stds[str(name)] = float(std)
-
     return {
         "type": "botorch_outcome_standardize",
         "objective_names": [str(item) for item in objective_names],
         "mean": means,
         "std": stds,
         "note": (
-            "qNEHVI/qLogNEHVI is evaluated with raw canonical objective units; "
-            "model-unit reference points are stored for audit only."
+            "The acquisition is evaluated in raw canonical objective units; "
+            "model-unit reference points are stored only for multi-objective audit."
         ),
     }
 
@@ -552,13 +594,11 @@ def _to_model_units(
 ) -> dict[str, float]:
     means = dict(y_transform.get("mean", {}))
     stds = dict(y_transform.get("std", {}))
-
     out: dict[str, float] = {}
     for name, value in ref_point_raw.items():
         mean = float(means[name])
         std = float(stds[name])
         out[str(name)] = float((float(value) - mean) / std)
-
     return out
 
 
@@ -575,22 +615,16 @@ def _categorical_pool_counts(
             categorical_names.append(str(name))
 
     out: dict[str, list[dict[str, Any]]] = {}
-
     for name in categorical_names:
         counts: dict[str, int] = {}
         total = 0
-
         for row in rows:
             params = row.get("params", {})
-            if not isinstance(params, Mapping):
+            if not isinstance(params, Mapping) or name not in params:
                 continue
-            if name not in params:
-                continue
-
             value = str(params[name])
             counts[value] = counts.get(value, 0) + 1
             total += 1
-
         out[name] = [
             {
                 "value": value,
@@ -602,5 +636,4 @@ def _categorical_pool_counts(
                 key=lambda item: (-item[1], item[0]),
             )
         ]
-
     return out
