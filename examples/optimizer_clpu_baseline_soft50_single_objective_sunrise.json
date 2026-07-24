@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "problem": "capillary",
+  "optimizer_run_root": "optimizer_runs",
+  "source_campaigns": [],
+  "optimization_history": {
+    "enabled": true,
+    "optimization_name": "clpu_capillary_guiding_baseline_soft50",
+    "iterations_root": "iterations",
+    "cases_tsv": "cases.tsv",
+    "campaign_name_template": "{optimization_name}_iter_{iteration:03d}",
+    "reduced_outputs": {
+      "guiding_metrics": "guiding_metrics.csv",
+      "guiding_singlecase_score": "guiding_singlecase_score.csv",
+      "particle_summary": "particle_analysis/plateau_exit/particle_summary.csv",
+      "acceptance_curves": "particle_analysis/plateau_exit/particle_acceptance_curves.csv",
+      "soft50_curves": "particle_analysis/plateau_exit/particle_soft50_curves.csv"
+    }
+  },
+  "parameter_space": {
+    "version": 2,
+    "laser_cases": ["f20", "f32", "f40"],
+    "ranges": {
+      "n0_1e18cm3": [0.7, 6.0],
+      "plateau_mm_num": [5.0, 25.0],
+      "diameter_um_num": [150.0, 500.0],
+      "focus_mm_num": [-5.0, 5.0]
+    },
+    "references": [
+      {
+        "reference_id": "carlos_D300_n4e18_baseline",
+        "laser_case": "f32",
+        "n0_1e18cm3": 4.0,
+        "plateau_mm_num": 5.0,
+        "diameter_um_num": 300.0,
+        "focus_mm_num": 0.0
+      }
+    ]
+  },
+  "objective": {
+    "schema_version": 1,
+    "config_id": "clpu_baseline_charge_soft50_plateau_exit_v1",
+    "required_scores_for_fit": [
+      "score_charge_soft50_direct_v1"
+    ],
+    "score_specs": {
+      "score_charge_soft50_direct_v1": [
+        "metric_particle_charge_soft50_pC"
+      ]
+    },
+    "derived_scores": []
+  },
+  "recommendation": {
+    "backend": "sobol_then_morbo",
+    "suggestion_mode": "regional_model",
+    "seed": 20260724,
+    "n_candidates": 6,
+    "min_observations": 32,
+    "objective_names": [
+      "score_charge_soft50_direct_v1"
+    ],
+    "initial_design": {
+      "include_references": true,
+      "sobol_points": 64,
+      "initial_batch_size": 32,
+      "continuation_batch_size": 32,
+      "seed": 20260724
+    },
+    "regional_policy": {
+      "max_regions": 3,
+      "initial_radius": 0.25,
+      "min_radius": 0.05,
+      "max_radius": 0.5,
+      "expansion_factor": 1.2,
+      "contraction_factor": 0.7,
+      "restart_failure_threshold": 3,
+      "local_min_observations": 3
+    },
+    "categorical_policy": {
+      "mode": "epsilon",
+      "epsilon": 0.2
+    },
+    "botorch": {
+      "enabled": true,
+      "fallback_to_random": true,
+      "candidate_pool_size_per_region": 256,
+      "mc_samples": 64,
+      "fit_maxiter": 75
+    }
+  },
+  "candidate_batch": {
+    "case_id_start": 0,
+    "plasma_kind": "chan",
+    "laser_duration_fwhm_fs": 30.0,
+    "cap_rmax_um": {
+      "policy": "radius_plus_margin",
+      "margin_um": 30.0
+    },
+    "cap_nr": 192,
+    "campaign_template": {
+      "campaign_json": "campaign_baseline_soft50.json",
+      "input_template": "baseline_input_template.py"
+    }
+  },
+  "validation": {
+    "require_case_validation": true
+  }
+}
