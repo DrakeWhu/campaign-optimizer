@@ -52,6 +52,30 @@ class ClpuBaselineSingleObjectiveConfigTests(unittest.TestCase):
             },
         )
 
+    def test_example_starts_eight_candidate_bo_after_completed_sobol(
+        self,
+    ) -> None:
+        payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        recommendation = payload["recommendation"]
+        design = recommendation["initial_design"]
+
+        self.assertEqual(recommendation["backend"], "sobol_then_morbo")
+        self.assertEqual(
+            recommendation["suggestion_mode"],
+            "regional_model",
+        )
+        self.assertEqual(recommendation["n_candidates"], 8)
+        self.assertEqual(recommendation["min_observations"], 32)
+        self.assertEqual(
+            recommendation["objective_names"],
+            ["score_charge_soft50_direct_v1"],
+        )
+
+        self.assertTrue(design["include_references"])
+        self.assertEqual(design["sobol_points"], 32)
+        self.assertEqual(design["initial_batch_size"], 32)
+        self.assertEqual(design["continuation_batch_size"], 32)
+
     def test_objective_table_copies_raw_soft50_charge(self) -> None:
         payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as tmp_name:

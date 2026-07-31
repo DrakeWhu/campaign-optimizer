@@ -54,14 +54,14 @@
     "backend": "sobol_then_morbo",
     "suggestion_mode": "regional_model",
     "seed": 20260724,
-    "n_candidates": 6,
+    "n_candidates": 8,
     "min_observations": 32,
     "objective_names": [
       "score_charge_soft50_direct_v1"
     ],
     "initial_design": {
       "include_references": true,
-      "sobol_points": 64,
+      "sobol_points": 32,
       "initial_batch_size": 32,
       "continuation_batch_size": 32,
       "seed": 20260724
