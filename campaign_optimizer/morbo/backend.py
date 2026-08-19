@@ -530,10 +530,17 @@ class MorboLikeBackend:
         clear_pending_signatures: list[str] = []
 
         for trial in trials:
-            try:
-                signature = self.space_codec.signature(trial.params)
-            except Exception:
-                continue
+            persisted_signature = trial.metadata.get("candidate_signature")
+            signature = (
+                persisted_signature.strip()
+                if isinstance(persisted_signature, str)
+                else ""
+            )
+            if not signature:
+                try:
+                    signature = self.space_codec.signature(trial.params)
+                except Exception:
+                    continue
 
             all_trial_signatures.append(signature)
 
