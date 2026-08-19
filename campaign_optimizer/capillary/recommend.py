@@ -500,10 +500,14 @@ def _morbo_trials_from_history(
             for objective_name in objective_names
             if objective_name in row.index
         }
+        candidate_signature = row.get("candidate_signature", "")
+        if pd.isna(candidate_signature):
+            candidate_signature = ""
         metadata = {
             "observation_id": str(row.get("observation_id", "")),
             "source_case_id": str(row.get("source_case_id", "")),
             "source_case_name": str(row.get("source_case_name", "")),
+            "candidate_signature": str(candidate_signature).strip(),
         }
         trials.append(
             TrialInput(
@@ -556,7 +560,9 @@ def _proposal_region_map_from_state(
 
     Candidate IDs in recommended_candidates.tsv are not guaranteed to survive as
     observation IDs after materialization/campaign execution, so attribution is
-    done by stable candidate signature instead of by candidate_id.
+    done by stable candidate signature instead of by candidate_id.  When the
+    persisted observation provenance is unavailable (historical campaigns), the
+    legacy reconstruction from trial.params remains the compatibility fallback.
     """
 
     if state is None:
@@ -581,10 +587,12 @@ def _proposal_region_map_from_state(
 
     out: dict[str, str] = {}
     for trial in trials:
-        try:
-            signature = backend.space_codec.signature(trial.params)
-        except Exception:
-            continue
+        signature = str(trial.metadata.get("candidate_signature", "")).strip()
+        if not signature:
+            try:
+                signature = backend.space_codec.signature(trial.params)
+            except Exception:
+                continue
         region_id = region_by_signature.get(signature)
         if region_id:
             out[trial.candidate_id] = region_id
