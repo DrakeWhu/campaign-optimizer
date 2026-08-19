@@ -47,6 +47,52 @@ def _load_previous_state(
     return None
 
 
+def _proposal_region_map_from_state(
+    state: OptimizerState | None,
+    *,
+    backend: MorboLikeBackend,
+    trials: list[TrialInput],
+) -> dict[str, str]:
+    """Map observed trial IDs back to the region that proposed them.
+
+    Materialization does not guarantee that recommendation candidate IDs survive
+    as observation IDs, so attribution is recovered through the stable candidate
+    signature persisted in pending_proposals.
+    """
+
+    if state is None:
+        return {}
+
+    pending = (
+        state.extra.get("pending_proposals", [])
+        if isinstance(state.extra, dict)
+        else []
+    )
+    if not isinstance(pending, list):
+        return {}
+
+    region_by_signature: dict[str, str] = {}
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        signature = str(item.get("candidate_signature", "")).strip()
+        region_id = str(item.get("region_id", "")).strip()
+        if signature and region_id:
+            region_by_signature[signature] = region_id
+
+    out: dict[str, str] = {}
+    for trial in trials:
+        try:
+            signature = backend.space_codec.signature(trial.params)
+        except Exception:
+            continue
+        region_id = region_by_signature.get(signature)
+        if region_id:
+            out[trial.candidate_id] = region_id
+
+    return out
+
+
 def _fit_rows(
     observations: pd.DataFrame, objectives: pd.DataFrame
 ) -> pd.DataFrame:
@@ -270,12 +316,18 @@ def _write_morbo_recommendations(
         botorch_config=BotorchRegionalConfig.from_dict(botorch_payload),
         categorical_policy=CategoricalRegionalPolicy.from_dict(categorical_payload),
     )
+    trials = _morbo_trials(
+        history,
+        parameter_space=parameter_space,
+        objective_spec=objective_spec,
+    )
     sync_result = backend.sync(
-        _morbo_trials(
-            history,
-            parameter_space=parameter_space,
-            objective_spec=objective_spec,
-        )
+        trials,
+        proposal_region_map=_proposal_region_map_from_state(
+            previous_state,
+            backend=backend,
+            trials=trials,
+        ),
     )
 
     count = int(rec_cfg.get("n_candidates", 4))
