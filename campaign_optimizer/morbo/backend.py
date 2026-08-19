@@ -195,10 +195,10 @@ class MorboLikeBackend:
             self.objective_spec.objective_names,
         )
 
-        frontier_input = frontier_records_from_observations(self.observations)
+        observation_records = frontier_records_from_observations(self.observations)
         self.frontier = tuple(
             compute_pareto_frontier(
-                frontier_input,
+                observation_records,
                 self.objective_spec.objective_names,
             )
         )
@@ -217,7 +217,7 @@ class MorboLikeBackend:
             if not regions:
                 regions = tuple(
                     initialize_regions(
-                        list(self.frontier),
+                        observation_records,
                         list(self.frontier),
                         params_by_candidate_id,
                         self.space_codec,
@@ -226,7 +226,7 @@ class MorboLikeBackend:
                 )
 
             assignments = assign_observations_to_regions(
-                list(self.frontier),
+                observation_records,
                 params_by_candidate_id,
                 self.space_codec,
                 regions,
@@ -235,7 +235,7 @@ class MorboLikeBackend:
             regions = tuple(
                 update_regions(
                     regions,
-                    list(self.frontier),
+                    observation_records,
                     list(self.frontier),
                     assignments,
                     proposal_region_map,
@@ -249,7 +249,7 @@ class MorboLikeBackend:
                 regions = tuple(
                     restart_regions(
                         regions,
-                        list(self.frontier),
+                        observation_records,
                         list(self.frontier),
                         params_by_candidate_id,
                         self.space_codec,
@@ -257,7 +257,7 @@ class MorboLikeBackend:
                     )
                 )
                 assignments = assign_observations_to_regions(
-                    list(self.frontier),
+                    observation_records,
                     params_by_candidate_id,
                     self.space_codec,
                     regions,
@@ -266,7 +266,7 @@ class MorboLikeBackend:
             regions = tuple(
                 finalize_region_counts(
                     regions,
-                    list(self.frontier),
+                    observation_records,
                     list(self.frontier),
                     assignments,
                 )
