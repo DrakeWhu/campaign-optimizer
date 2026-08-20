@@ -115,6 +115,17 @@ def _metric_from_reduced_output_row(
     return out
 
 
+def _optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
 def _read_first_row_csv(path: Path) -> tuple[dict[str, Any], str, str]:
     metrics, status, reason = read_first_row_csv(path)
     return metrics, status, reason
@@ -339,6 +350,9 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 "source_campaign_root": str(campaign_root),
                 "source_case_id": case_id,
                 "source_case_name": case_name,
+                "candidate_signature": _optional_text(
+                    case_dict.get("OPT_CANDIDATE_SIGNATURE", "")
+                ),
                 "case_state": state.get("state", "missing_state"),
                 "simulation_status": (
                     "ok"
@@ -474,6 +488,7 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
         "source_campaign_root",
         "source_case_id",
         "source_case_name",
+        "candidate_signature",
         "case_state",
         "simulation_status",
         "raw_validation_status",

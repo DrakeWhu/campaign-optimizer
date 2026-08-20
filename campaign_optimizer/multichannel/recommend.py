@@ -47,6 +47,17 @@ def _load_previous_state(
     return None
 
 
+def _optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
 def _proposal_region_map_from_state(
     state: OptimizerState | None,
     *,
@@ -57,7 +68,9 @@ def _proposal_region_map_from_state(
 
     Materialization does not guarantee that recommendation candidate IDs survive
     as observation IDs, so attribution is recovered through the stable candidate
-    signature persisted in pending_proposals.
+    signature persisted in pending_proposals.  When observation provenance does
+    not contain that signature (historical campaigns), the legacy reconstruction
+    from trial.params remains the compatibility fallback.
     """
 
     if state is None:
@@ -82,10 +95,12 @@ def _proposal_region_map_from_state(
 
     out: dict[str, str] = {}
     for trial in trials:
-        try:
-            signature = backend.space_codec.signature(trial.params)
-        except Exception:
-            continue
+        signature = _optional_text(trial.metadata.get("candidate_signature", ""))
+        if not signature:
+            try:
+                signature = backend.space_codec.signature(trial.params)
+            except Exception:
+                continue
         region_id = region_by_signature.get(signature)
         if region_id:
             out[trial.candidate_id] = region_id
@@ -284,6 +299,9 @@ def _morbo_trials(
                 metadata={
                     "source_case_id": str(row.get("source_case_id", "")),
                     "source_case_name": str(row.get("source_case_name", "")),
+                    "candidate_signature": _optional_text(
+                        row.get("candidate_signature", "")
+                    ),
                 },
             )
         )

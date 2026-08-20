@@ -49,6 +49,17 @@ def _validation_section_ok(
     return bool(values) and all(item.get("ok") is True for item in values)
 
 
+def _optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
 def _empty_observations(parameter_space: dict[str, Any]) -> pd.DataFrame:
     columns = [
         "observation_id",
@@ -62,6 +73,7 @@ def _empty_observations(parameter_space: dict[str, Any]) -> pd.DataFrame:
         "reduced_validation_status",
         "particle_summary_status",
         "failure_reason",
+        "candidate_signature",
         "sample_source",
         "sobol_index",
         *parameter_names(parameter_space),
@@ -151,6 +163,9 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 ),
                 "particle_summary_status": metrics_status,
                 "failure_reason": "" if metrics_status == "ok" else metrics_reason,
+                "candidate_signature": _optional_text(
+                    case_row.get("OPT_CANDIDATE_SIGNATURE", "")
+                ),
                 "sample_source": str(case_row.get("OPT_SAMPLE_SOURCE", "")),
                 "sobol_index": sobol_index,
                 **parameters_from_case_row(case_row, parameter_space),
@@ -173,6 +188,7 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
         "reduced_validation_status",
         "particle_summary_status",
         "failure_reason",
+        "candidate_signature",
         "sample_source",
         "sobol_index",
         *parameter_names(parameter_space),
