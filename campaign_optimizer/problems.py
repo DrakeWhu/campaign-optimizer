@@ -19,9 +19,19 @@ def _problem_callable(config: OptimizerConfig, module: str, name: str) -> Callab
 
 
 def build_observations(config: OptimizerConfig, iteration: int) -> Path:
-    return _problem_callable(config, "observations", "build_observations")(
+    result = _problem_callable(config, "observations", "build_observations")(
         config, iteration
     )
+    if config.problem_kind() == "capillary":
+        from campaign_optimizer.capillary.candidate_identity import (
+            normalize_observation_candidate_signatures,
+        )
+
+        return normalize_observation_candidate_signatures(
+            result,
+            parameter_space=config.parameter_space(),
+        )
+    return result
 
 
 def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
