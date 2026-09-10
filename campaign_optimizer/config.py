@@ -107,6 +107,8 @@ DEFAULT_OPTIMIZATION_HISTORY = {
     "reduced_outputs": dict(DEFAULT_REDUCED_OUTPUTS),
 }
 
+STRICT_SOURCE_MANIFEST_CONTRACT = "strict_static_sources_v1"
+
 
 @dataclass(frozen=True)
 class OptimizerConfig:
@@ -162,6 +164,38 @@ class OptimizerConfig:
             )
         return [dict(source) for source in value]
 
+    def source_manifest_contract(self) -> dict[str, Any]:
+        raw = self.data.get("source_manifest_contract", {}) or {}
+        if not isinstance(raw, dict):
+            raise ValueError("source_manifest_contract must be an object")
+        if not raw:
+            return {}
+
+        contract_id = str(raw.get("contract_id", "")).strip()
+        if contract_id != STRICT_SOURCE_MANIFEST_CONTRACT:
+            raise ValueError(
+                "unsupported source_manifest_contract.contract_id="
+                f"{contract_id!r}"
+            )
+
+        try:
+            expected_static = int(raw["expected_static_source_count"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "source_manifest_contract.expected_static_source_count "
+                "must be a positive integer"
+            ) from exc
+        if expected_static <= 0:
+            raise ValueError(
+                "source_manifest_contract.expected_static_source_count "
+                "must be a positive integer"
+            )
+
+        return {
+            "contract_id": contract_id,
+            "expected_static_source_count": expected_static,
+        }
+
     def optimization_history_config(self) -> dict[str, Any]:
         value = self.data.get("optimization_history", {}) or {}
         if not isinstance(value, dict):
@@ -216,6 +250,9 @@ class OptimizerConfig:
         name_template = str(cfg["campaign_name_template"])
         cases_tsv = str(cfg["cases_tsv"])
         reduced_outputs = dict(cfg["reduced_outputs"])
+        particle_observation_contract = str(
+            cfg.get("particle_observation_contract", "") or ""
+        ).strip()
 
         sources: list[dict[str, Any]] = []
 
@@ -234,30 +271,85 @@ class OptimizerConfig:
                 iteration_name=f"iter_{previous_iteration:03d}",
             )
 
-            sources.append(
-                {
-                    "campaign_name": campaign_name,
-                    "campaign_root": str(campaign_root),
-                    "cases_tsv": cases_tsv,
-                    "reduced_outputs": dict(reduced_outputs),
-                    "source_kind": "optimization_history",
-                    "history_iteration": previous_iteration,
-                }
-            )
+            source = {
+                "campaign_name": campaign_name,
+                "campaign_root": str(campaign_root),
+                "cases_tsv": cases_tsv,
+                "reduced_outputs": dict(reduced_outputs),
+                "source_kind": "optimization_history",
+                "history_iteration": previous_iteration,
+            }
+            if particle_observation_contract:
+                source["particle_observation_contract"] = (
+                    particle_observation_contract
+                )
+            sources.append(source)
 
         return sources
+
+    def _validate_strict_source_manifest(
+        self,
+        static_sources: list[dict[str, Any]],
+        history_sources: list[dict[str, Any]],
+        contract: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        expected_static = int(contract["expected_static_source_count"])
+        if len(static_sources) != expected_static:
+            raise ValueError(
+                "strict source manifest expected "
+                f"{expected_static} static sources, got {len(static_sources)}"
+            )
+
+        merged = [*static_sources, *history_sources]
+        aliases: dict[str, int] = {}
+        roots: dict[str, int] = {}
+
+        for index, source in enumerate(merged):
+            alias = str(source.get("campaign_name", "") or "").strip()
+            if not alias:
+                raise ValueError(
+                    f"strict source manifest source[{index}] lacks campaign_name"
+                )
+            if alias in aliases:
+                raise ValueError(
+                    "strict source manifest duplicate campaign_name="
+                    f"{alias!r} at indices {aliases[alias]} and {index}"
+                )
+            aliases[alias] = index
+
+            if "campaign_root" not in source:
+                raise ValueError(
+                    f"strict source manifest source[{index}] lacks campaign_root"
+                )
+            campaign_root = resolve_path(self.base_dir, source["campaign_root"])
+            root_key = str(campaign_root.resolve())
+            if root_key in roots:
+                raise ValueError(
+                    "strict source manifest duplicate resolved campaign_root="
+                    f"{root_key!r} at indices {roots[root_key]} and {index}"
+                )
+            roots[root_key] = index
+
+        return [dict(source) for source in merged]
 
     def source_campaigns_for_iteration(self, iteration: int) -> list[dict[str, Any]]:
         if iteration < 0:
             raise ValueError("iteration must be non-negative")
 
+        static_sources = self.source_campaigns()
+        history_sources = self.optimization_history_source_campaigns(iteration)
+        contract = self.source_manifest_contract()
+        if contract:
+            return self._validate_strict_source_manifest(
+                static_sources,
+                history_sources,
+                contract,
+            )
+
         merged: list[dict[str, Any]] = []
         seen_roots: set[str] = set()
 
-        for source in [
-            *self.source_campaigns(),
-            *self.optimization_history_source_campaigns(iteration),
-        ]:
+        for source in [*static_sources, *history_sources]:
             campaign_root = resolve_path(self.base_dir, source["campaign_root"])
             root_key = str(campaign_root.resolve())
 
