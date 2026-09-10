@@ -31,6 +31,19 @@ def build_objectives(config: OptimizerConfig, iteration: int) -> Path:
 
 
 def propose_recommendations(config: OptimizerConfig, iteration: int) -> Path:
+    if config.problem_kind() == "capillary":
+        from campaign_optimizer.capillary.state_contract import (
+            finalize_state_contract,
+            prepare_state_contract,
+        )
+
+        prepare_state_contract(config, iteration)
+        result = _problem_callable(config, "recommend", "propose_recommendations")(
+            config, iteration
+        )
+        finalize_state_contract(config, iteration)
+        return result
+
     return _problem_callable(config, "recommend", "propose_recommendations")(
         config, iteration
     )
