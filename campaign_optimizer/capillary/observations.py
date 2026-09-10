@@ -22,6 +22,14 @@ from campaign_optimizer.io import (
 from .parameters import PARAMETER_COLUMNS, canonical_parameters_from_case_row
 
 
+NITROGEN_PARTICLE_OBSERVATION_CONTRACT = "clpu_n2_plateau_all_electrons_v1"
+NITROGEN_SPECIES_SCOPES = [
+    "all_electrons",
+    "preionized_background_electrons",
+    "nitrogen_ionized_electrons",
+]
+
+
 def _case_dir(campaign_root: Path, case_name: str) -> Path:
     path = campaign_root / case_name
 
@@ -211,6 +219,216 @@ def _read_soft50_curve_row(
     return dict(selected.iloc[-1]), "ok", ""
 
 
+def _read_nitrogen_particle_summary(
+    path: Path,
+) -> tuple[dict[str, Any], str, str]:
+    """Read the canonical plateau/all-electron summary for the N2 profile."""
+
+    if not path.is_file():
+        return {}, "missing_reduced_output", f"missing file: {path}"
+    try:
+        frame = read_table(path)
+    except Exception as exc:
+        return {}, "analysis_failed", f"csv read failed: {exc}"
+    if frame.empty or "species_scope" not in frame.columns:
+        return {}, "particle_observation_contract_failed", f"invalid N2 summary: {path}"
+
+    scopes = frame["species_scope"].astype(str).str.strip().str.lower().tolist()
+    if scopes != NITROGEN_SPECIES_SCOPES:
+        return (
+            {},
+            "particle_observation_contract_failed",
+            "N2 particle summary scopes must appear exactly once and in order "
+            f"{NITROGEN_SPECIES_SCOPES}; observed={scopes}: {path}",
+        )
+
+    required_columns = {
+        "selection_mode",
+        "particle_exit_selection_policy",
+        "selected_particle_iteration",
+        "soft50_schema_version",
+        "soft50_energy_low_MeV",
+        "soft50_energy_target_MeV",
+        "charge_soft50_pC",
+        "charge_Ege50MeV_pC",
+        "forward_only",
+    }
+    missing = sorted(required_columns - set(frame.columns))
+    if missing:
+        return (
+            {},
+            "particle_observation_contract_failed",
+            f"N2 particle summary lacks required columns {missing}: {path}",
+        )
+
+    selection_modes = frame["selection_mode"].astype(str).str.strip().str.lower()
+    if not selection_modes.eq("exit").all():
+        return {}, "particle_observation_contract_failed", f"N2 summary selection_mode must be exit: {path}"
+    policies = frame["particle_exit_selection_policy"].astype(str).str.strip()
+    if not policies.eq("exact_resolved_v1").all():
+        return (
+            {},
+            "particle_observation_contract_failed",
+            f"N2 summary must use exact_resolved_v1 particle exit selection: {path}",
+        )
+
+    iterations = pd.to_numeric(frame["selected_particle_iteration"], errors="coerce")
+    if iterations.isna().any() or iterations.nunique(dropna=False) != 1:
+        return (
+            {},
+            "particle_observation_contract_failed",
+            f"N2 summary scopes do not share one selected particle iteration: {path}",
+        )
+
+    return dict(frame.iloc[0]), "ok", ""
+
+
+def _read_nitrogen_soft50_curve_row(
+    path: Path,
+    *,
+    energy_low_mev: float,
+) -> tuple[dict[str, Any], str, str]:
+    """Read the unique all-electron N2 curve row used only for concordance."""
+
+    if not path.is_file():
+        return {}, "missing_reduced_output", f"missing file: {path}"
+    try:
+        frame = read_table(path)
+    except Exception as exc:
+        return {}, "analysis_failed", f"csv read failed: {exc}"
+
+    required = {
+        "species_scope",
+        "selection_mode",
+        "selected_particle_iteration",
+        "soft50_schema_version",
+        "soft50_energy_low_MeV",
+        "soft50_energy_target_MeV",
+        "charge_soft50_pC",
+        "charge_Ege50MeV_pC",
+        "forward_only",
+    }
+    missing = sorted(required - set(frame.columns))
+    if frame.empty or missing:
+        return (
+            {},
+            "particle_observation_contract_failed",
+            f"invalid N2 Soft50 curve; missing columns={missing}: {path}",
+        )
+
+    scope_order: list[str] = []
+    for value in frame["species_scope"].astype(str).str.strip().str.lower():
+        if value not in scope_order:
+            scope_order.append(value)
+    if scope_order != NITROGEN_SPECIES_SCOPES:
+        return (
+            {},
+            "particle_observation_contract_failed",
+            "N2 Soft50 curve scopes must preserve aggregate/background/ionized order; "
+            f"observed={scope_order}: {path}",
+        )
+
+    energy = pd.to_numeric(frame["soft50_energy_low_MeV"], errors="coerce")
+    scopes = frame["species_scope"].astype(str).str.strip().str.lower()
+    selected = frame.loc[
+        np.isclose(energy, float(energy_low_mev), rtol=0.0, atol=1.0e-9)
+        & scopes.eq("all_electrons")
+    ]
+    if len(selected) != 1:
+        return (
+            {},
+            "particle_observation_contract_failed",
+            "N2 Soft50 curve must contain exactly one all_electrons row for "
+            f"E_low={energy_low_mev:g} MeV; found={len(selected)}: {path}",
+        )
+    return dict(selected.iloc[0]), "ok", ""
+
+
+def _numeric_concordance(
+    left: Any,
+    right: Any,
+    *,
+    name: str,
+    atol: float = 1.0e-12,
+    rtol: float = 1.0e-12,
+) -> str:
+    try:
+        left_value = float(left)
+        right_value = float(right)
+    except (TypeError, ValueError):
+        return f"{name} is not numeric: summary={left!r}, curve={right!r}"
+    if not np.isfinite(left_value) or not np.isfinite(right_value):
+        return f"{name} must be finite: summary={left_value}, curve={right_value}"
+    if not np.isclose(left_value, right_value, rtol=rtol, atol=atol):
+        return f"{name} differs: summary={left_value:.17g}, curve={right_value:.17g}"
+    return ""
+
+
+def _validate_nitrogen_soft50_concordance(
+    summary: dict[str, Any],
+    curve: dict[str, Any],
+    *,
+    energy_low_mev: float,
+    energy_target_mev: float,
+) -> tuple[str, str]:
+    """Require the curve to agree with, not overwrite, the canonical summary."""
+
+    text_fields = {
+        "species_scope": "all_electrons",
+        "selection_mode": "exit",
+        "soft50_schema_version": "soft50_v2",
+    }
+    for name, expected in text_fields.items():
+        summary_value = str(summary.get(name, "")).strip().lower()
+        curve_value = str(curve.get(name, "")).strip().lower()
+        if summary_value != expected.lower() or curve_value != expected.lower():
+            return (
+                "particle_observation_contract_failed",
+                f"N2 Soft50 {name} mismatch: expected={expected!r}, "
+                f"summary={summary.get(name)!r}, curve={curve.get(name)!r}",
+            )
+
+    expected_numeric = {
+        "soft50_energy_low_MeV": float(energy_low_mev),
+        "soft50_energy_target_MeV": float(energy_target_mev),
+    }
+    for name, expected in expected_numeric.items():
+        for origin, payload in (("summary", summary), ("curve", curve)):
+            reason = _numeric_concordance(payload.get(name), expected, name=f"{origin}.{name}")
+            if reason:
+                return "particle_observation_contract_failed", f"N2 Soft50 {reason}"
+
+    for name in (
+        "selected_particle_iteration",
+        "charge_soft50_pC",
+        "charge_Ege50MeV_pC",
+    ):
+        reason = _numeric_concordance(summary.get(name), curve.get(name), name=name)
+        if reason:
+            return "particle_observation_contract_failed", f"N2 Soft50 {reason}"
+
+    for origin, payload in (("summary", summary), ("curve", curve)):
+        forward = str(payload.get("forward_only", "")).strip().lower()
+        if forward not in {"true", "1"}:
+            return (
+                "particle_observation_contract_failed",
+                f"N2 Soft50 forward_only must be true in {origin}; got={payload.get('forward_only')!r}",
+            )
+
+    return "ok", ""
+
+
+def _mark_particle_observation_contract_failure(
+    row: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    row["analysis_status"] = "particle_observation_contract_failed"
+    row["reduced_validation_status"] = "particle_observation_contract_failed"
+    row["failure_kind"] = "particle_observation_contract"
+    row["failure_reason"] = reason
+
+
 def _add_global_metrics(
     base: pd.DataFrame,
     joint: pd.DataFrame | None,
@@ -315,6 +533,19 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
         campaign_root = resolve_path(config.base_dir, source["campaign_root"])
         cases_path = resolve_path(campaign_root, source.get("cases_tsv", "cases.tsv"))
         campaign_name = source.get("campaign_name", campaign_root.name)
+        particle_observation_contract = str(
+            source.get("particle_observation_contract", "") or ""
+        ).strip()
+        if particle_observation_contract and (
+            particle_observation_contract != NITROGEN_PARTICLE_OBSERVATION_CONTRACT
+        ):
+            raise ValueError(
+                "unsupported particle_observation_contract="
+                f"{particle_observation_contract!r} for source {campaign_name!r}"
+            )
+        nitrogen_contract = (
+            particle_observation_contract == NITROGEN_PARTICLE_OBSERVATION_CONTRACT
+        )
 
         cases = read_table(cases_path)
         joint, acceptance = _load_global_tables(campaign_root, source)
@@ -367,6 +598,12 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 if reduced_status in {"ok", "validation_not_required"}
                 else "reduced_validation",
                 "failure_reason": reduced_reason or raw_reason,
+                "particle_observation_contract": (
+                    particle_observation_contract or "legacy"
+                ),
+                "particle_metric_origin": "not_checked",
+                "soft50_curve_concordance_status": "not_checked",
+                "soft50_curve_concordance_reason": "",
                 "channel_case_id": case_name
                 if params.get("plasma_kind") == "chan"
                 else "",
@@ -403,13 +640,24 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
                 reduced_outputs.get("particle_summary")
                 and params.get("plasma_kind") != "vac"
             ):
-                particle_metrics, status, reason = _read_first_row_csv(
-                    cdir / reduced_outputs["particle_summary"]
-                )
+                summary_path = cdir / reduced_outputs["particle_summary"]
+                if nitrogen_contract:
+                    particle_metrics, status, reason = _read_nitrogen_particle_summary(
+                        summary_path
+                    )
+                    row["particle_metric_origin"] = (
+                        "particle_summary:first_row_all_electrons"
+                    )
+                else:
+                    particle_metrics, status, reason = _read_first_row_csv(summary_path)
+                    row["particle_metric_origin"] = "particle_summary:first_row_legacy"
                 row["particle_summary_status"] = status
                 if reason and not row["failure_reason"]:
                     row["failure_reason"] = reason
-                row.update(_metric_from_first_row("particle", particle_metrics))
+                if status == "ok":
+                    row.update(_metric_from_first_row("particle", particle_metrics))
+                elif nitrogen_contract:
+                    _mark_particle_observation_contract_failure(row, reason=reason)
 
             if (
                 reduced_outputs.get("soft50_curves")
@@ -417,15 +665,54 @@ def build_observations(config: OptimizerConfig, iteration: int) -> Path:
             ):
                 soft50_cfg = config.objective_config().get("soft50_v1", {}) or {}
                 energy_low = float(soft50_cfg.get("energy_low_MeV", 10.0))
-                curve_metrics, status, _reason = _read_soft50_curve_row(
-                    cdir / reduced_outputs["soft50_curves"],
-                    energy_low_mev=energy_low,
-                )
-                row["soft50_curves_status"] = status
-                if status == "ok":
-                    row.update(
-                        _metric_from_reduced_output_row("particle", curve_metrics)
+                energy_target = float(soft50_cfg.get("energy_target_MeV", 50.0))
+                curve_path = cdir / reduced_outputs["soft50_curves"]
+                if nitrogen_contract:
+                    curve_metrics, status, reason = _read_nitrogen_soft50_curve_row(
+                        curve_path,
+                        energy_low_mev=energy_low,
                     )
+                    row["soft50_curves_status"] = status
+                    if status == "ok" and particle_metrics:
+                        concordance_status, concordance_reason = (
+                            _validate_nitrogen_soft50_concordance(
+                                particle_metrics,
+                                curve_metrics,
+                                energy_low_mev=energy_low,
+                                energy_target_mev=energy_target,
+                            )
+                        )
+                        row["soft50_curve_concordance_status"] = concordance_status
+                        row["soft50_curve_concordance_reason"] = concordance_reason
+                        if concordance_status != "ok":
+                            _mark_particle_observation_contract_failure(
+                                row,
+                                reason=concordance_reason,
+                            )
+                    elif status != "ok":
+                        row["soft50_curve_concordance_status"] = status
+                        row["soft50_curve_concordance_reason"] = reason
+                        _mark_particle_observation_contract_failure(row, reason=reason)
+                    else:
+                        reason = "N2 Soft50 concordance cannot run without a valid canonical summary"
+                        row["soft50_curve_concordance_status"] = (
+                            "particle_observation_contract_failed"
+                        )
+                        row["soft50_curve_concordance_reason"] = reason
+                        _mark_particle_observation_contract_failure(row, reason=reason)
+                    # Deliberately do not merge curve metrics into metric_particle_*.
+                    # The canonical plateau/all-electron summary remains authoritative.
+                else:
+                    curve_metrics, status, _reason = _read_soft50_curve_row(
+                        curve_path,
+                        energy_low_mev=energy_low,
+                    )
+                    row["soft50_curves_status"] = status
+                    row["soft50_curve_concordance_status"] = "legacy_not_required"
+                    if status == "ok":
+                        row.update(
+                            _metric_from_reduced_output_row("particle", curve_metrics)
+                        )
 
             if reduced_outputs.get("guiding_metrics"):
                 guiding_metrics, status, reason = _read_guiding_metrics_row(
