@@ -33,6 +33,8 @@ python -m campaign_optimizer.cli.run_iteration --config optimizer.json --iterati
 - Regional state with expansion/contraction/restart bookkeeping.
 - `global_random` fallback.
 - `regional_random` proposals.
+- Optional `regional_model` proposals through BoTorch qLogNEHVI/qNEHVI.
+- Model diagnostics and configurable random fallback.
 - `recommended_candidates.tsv` compatible with the capillary candidate-batch builder.
 - `candidate_batch.tsv` generation through the existing downstream path.
 - Sidecar files:
@@ -55,7 +57,10 @@ The MORBO-like backend does not:
 
 It consumes reduced observations and emits candidate recommendations.
 
-## SUNRISE smoke test
+## Historical SUNRISE smoke report
+
+The following is a previously recorded result, not a run repeated during the
+2026-10-20 Cloud baseline. See `BASELINE_2026-10-20.md` for newly executed tests.
 
 A file-based smoke test was run on SUNRISE against reduced data from:
 
@@ -123,21 +128,23 @@ file-contract compatible: yes
 validated full MORBO implementation: no
 ```
 
-## Next planned stage
+## Optional model implementation and validation limits
 
-The next stage is optional BoTorch-backed regional model proposals:
+`campaign_optimizer/morbo/botorch_model.py` implements the optional
+`regional_model` path with lazy Torch/BoTorch/GPyTorch imports. It fits models
+and ranks candidates from sampled regional pools. The backend preserves
+`global_random` and `regional_random` paths and records model diagnostics.
+Random fallback depends on `recommendation.botorch.fallback_to_random`;
+do not describe fallback as a successful model fit.
 
-```text
-The next stage is optional BoTorch-backed regional model proposals:
-```
+The code uses raw canonical objective units for acquisition reference points
+and records standardization metadata. Implementation presence is not proof of
+numerical correctness or equivalence to published MORBO.
 
-The existing random modes must remain available:
-
-```text
-The existing random modes must remain available:
-```
-
-The BoTorch mode must be optional and must fall back to `regional_random` if fitting or acquisition evaluation fails.
+The Cloud baseline ran without Torch, BoTorch, GPyTorch, Optimas, or Ax.
+`tests/test_morbo_botorch_optional.py` checks configuration, disabled behavior,
+and fallback; it does not establish a successful real BoTorch fit.
+Actual model/acquisition validation remains a separate task.
 
 ## Why this is still called `morbo_like`
 
@@ -199,13 +206,16 @@ multi-objective backend with Pareto frontier tracking, trust-region-like
 state, BoTorch qLogNEHVI/qNEHVI proposal mode, and random fallbacks.
 ```
 
-Acceptable wording for reports or internal documentation:
+Acceptable wording only when a report has evidence of actual BoTorch execution:
 
 ```text
 We implemented a MORBO-inspired regional multi-objective Bayesian optimization
 backend using BoTorch qLogNEHVI, integrated with the WarpX campaign optimization
 workflow.
 ```
+
+For dependency-free runs, report the actual random strategy and any fallback
+reason instead of implying that Bayesian model fitting occurred.
 
 Avoid for now:
 

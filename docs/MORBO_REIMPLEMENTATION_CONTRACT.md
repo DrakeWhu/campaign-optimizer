@@ -1,5 +1,15 @@
 # MORBO-like Backend Reimplementation Contract
 
+## Reading this document
+
+This document retains the historical design rationale and phased roadmap.
+The repository is now named `campaign-optimizer`; references below to
+`campaign-optimization` describe the earlier design context.
+The current implementation includes optional BoTorch regional proposals.
+Use `MORBO_LIKE_V1_STATUS.md` and the status note at the end of this document
+for present capabilities, and `BASELINE_2026-10-20.md` for executed evidence.
+Historical "add" or "not implemented" milestones are not a current inventory.
+
 ## 1. Purpose
 
 This document defines the contract for reimplementing the useful parts of the legacy `parameter_scan` MORBO/BO code into the modern `campaign-optimization` repository.
@@ -767,20 +777,26 @@ The correct long-term goal is:
 Validate and, if justified, promote morbo_like -> morbo after comparison with the MORBO paper and official implementation.
 ```
 
-Current implementation status
+## Current implementation status (2026-10-20)
 
-Implemented:
-- backend="morbo_like" selectable from the existing recommendation flow
-- no separate CLI
-- no BoTorch
-- global_random fallback
-- regional_random proposals
-- Pareto frontier
-- regions/state/observations
-- recommended_candidates.tsv compatible with capillary batch
+Implemented in the audited default-branch revision:
 
-Not implemented yet:
-- regional_model
-- qLogNEHVI
-- corrected BoTorch reference-point scaling
-- validation against official MORBO
+- `backend="morbo_like"` in the existing recommendation flow, without a
+  separate CLI;
+- dependency-free global/regional random paths, Pareto frontier, observations,
+  regional bookkeeping, and persisted state;
+- optional `regional_model` using BoTorch qLogNEHVI/qNEHVI to rank regional
+  candidate pools, with configurable random fallback;
+- acquisition reference points in raw canonical objective units and recorded
+  standardization metadata;
+- recommendations and downstream candidate-batch generation.
+
+Still requiring separate validation:
+
+- real model fitting/acquisition with a pinned optional dependency stack;
+- numerical reference-point/model-unit behavior under that stack;
+- equivalence to the published MORBO algorithm and official implementation.
+
+The 2026-10-20 Cloud unittest baseline did not install or execute BoTorch.
+Do not interpret implementation status or random fallback tests as evidence
+that those numerical or algorithmic validations have been completed.
