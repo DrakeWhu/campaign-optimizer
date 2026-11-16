@@ -31,6 +31,25 @@
   behavior until the pending observation contracts are reviewed. Do not
   silently reinterpret nozzle compatibility fields as electron-beam metrics.
 
+## Cross-repository runtime and provenance
+
+- Before inspecting or building observations for an HPC campaign, identify the
+  actual optimizer checkout, full Git revision, selected Python environment,
+  and imported `campaign_optimizer.__file__` **after** the final environment
+  script is sourced. `PYTHONPATH` alone does not prove import provenance.
+- Treat recorded workflow, optimizer, and guiding revisions as an explicit
+  compatibility boundary. A current default branch must not silently replace
+  a frozen production worktree. Do not assume a newer observation contract
+  was available in a historical campaign.
+- Keep historical campaign roots independent when importing reduced evidence;
+  validate source identity, units, species, temporal selection, eligibility,
+  and state compatibility before any multi-source optimization or state reuse.
+- For SUNRISE environment and campaign operations, use the corresponding
+  site-specific procedures in campaign-workflow when available. Do not
+  duplicate workflow-owned Slurm, quota, Gate B, or cleanup logic here.
+- Default to non-mutating inspection; report which commands would create
+  observations, reports, candidate batches, or optimizer state before running.
+
 ## Verification
 
 - Use `PYTHONPATH=. python -B -m unittest discover -s tests -p 'test_*.py' -v`
